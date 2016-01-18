@@ -20,14 +20,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 "use strict";
-(function() {
+;(function() {
 
   var root = this;
   var previousPyon = root.Pyon;
 
 
 
-  var PyonObject = (function() {
+  var Pyon = root.Pyon = (function() {
 
     var rAF = window.requestAnimationFrame ||
       window.webkitRequestAnimationFrame ||
@@ -324,7 +324,7 @@ THE SOFTWARE.
       var presentationKey = "presentation"; // Rename "presentationLayer"?
       var presentationComposite = function() {
         //var presentationLayer = {};
-        var presentationLayer = Object.create(receiver.modelLayer); // Until we have Proxy, have to use Object.create instead of just using a POJO
+        var presentationLayer = Object.create(receiver.modelLayer); // Until we have Proxy, have to use Object.create
 
         var compositor = Object.keys(modelDict).reduce(function(n, k){ n[k] = modelDict[k]; return n;}, {});
 
@@ -867,12 +867,12 @@ THE SOFTWARE.
 //}));
 
 
-  PyonObject.noConflict = function() {
+  Pyon.noConflict = function() {
     root.Pyon = previousPyon;
-    return PyonObject;
+    return Pyon;
   }
   if (typeof exports !== "undefined") { // http://www.richardrodger.com/2013/09/27/how-to-make-simple-node-js-modules-work-in-the-browser/#.VpuIsTZh2Rs
-    if (typeof module !== "undefined" && module.exports) exports = module.exports = PyonObject;
-    exports.Pyon = PyonObject;
-  } else root.Pyon = PyonObject;
+    if (typeof module !== "undefined" && module.exports) exports = module.exports = Pyon;
+    exports.Pyon = Pyon;
+  } else root.Pyon = Pyon;
 }).call(this);
