@@ -2,10 +2,10 @@
 
 (function() {
   var root = this
-  var previousVelvet = root.Velvet;
+  var previousPyon = root.Pyon;
   
   
-  var Velvet = (function() {
+  var Pyon = (function() {
 
     var rAF = window.requestAnimationFrame ||
       window.webkitRequestAnimationFrame ||
@@ -111,7 +111,7 @@
           transaction.time = this.transactions[length-1].time;
         }
         this.transactions.push(transaction);
-        if (automaticallyCommit) this.startTicking(); // Velvet bug fix !!! // Automatic transactions will otherwise not be closed if there is no animation or value set.
+        if (automaticallyCommit) this.startTicking(); // Pyon bug fix !!! // Automatic transactions will otherwise not be closed if there is no animation or value set.
         return transaction;
       },
       currentTransaction: function() {
@@ -223,9 +223,9 @@
       };
 
       var setValueForKey = function(value,property) {
-        if (value === modelDict[property]) return; // New in Velvet! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal
+        if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal
         var animation;
-        var transaction = shoeContext.currentTransaction(); // Velvet bug! This transaction might not get closed.
+        var transaction = shoeContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
         if (!transaction.disableAnimation) {
           animation = implicitAnimation(property,value);
           if (animation) {
@@ -327,7 +327,7 @@
           shouldSortAnimations = false;
         }
 
-        if (allAnimations.length) { // Velvet bug fix! Do not create a transaction if there are no animations else the transaction will not be automatically closed.
+        if (allAnimations.length) { // Pyon bug fix! Do not create a transaction if there are no animations else the transaction will not be automatically closed.
           var transaction = shoeContext.currentTransaction();
           var now = transaction.time;
 
@@ -470,7 +470,7 @@
       this.startTime; // float
       this.delta;
 
-      this.initial; // Temporary. Does not belong in Velvet change descriptions.
+      this.initial; // Temporary. Does not belong in Pyon change descriptions.
 
       if (settings) Object.keys(settings).forEach( function(key) {
         this[key] = settings[key];
@@ -759,17 +759,17 @@
   })();
 
 
-  Velvet.noConflict = function() {
-    root.Velvet = previousVelvet;
-    return Velvet;
+  Pyon.noConflict = function() {
+    root.Pyon = previousPyon;
+    return Pyon;
   }
 
   if (typeof exports !== "undefined") { // http://www.richardrodger.com/2013/09/27/how-to-make-simple-node-js-modules-work-in-the-browser/#.VpuIsTZh2Rs
     if (typeof module !== "undefined" && module.exports) {
-      exports = module.exports = Velvet;
+      exports = module.exports = Pyon;
     }
-    exports.Velvet = Velvet;
-  } else root.Velvet = Velvet;
+    exports.Pyon = Pyon;
+  } else root.Pyon = Pyon;
 
 
 }).call(this);
