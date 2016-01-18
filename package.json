@@ -1,0 +1,26 @@
+{
+  "name": "pyon",
+  "version": "0.0.1",
+  "description": "Animation layers for javascript",
+  "main": "pyon.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KevinDoughty/pyon.git"
+  },
+  "keywords": [
+    "relative",
+    "additive",
+    "animation",
+    "layer",
+    "delta"
+  ],
+  "author": "Kevin Doughty",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/KevinDoughty/pyon/issues"
+  },
+  "homepage": "https://github.com/KevinDoughty/pyon#readme"
+}

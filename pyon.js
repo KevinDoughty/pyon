@@ -1,11 +1,33 @@
-"use strict";
+/*
+Copyright (c) 2016 Kevin Doughty
 
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+"use strict";
 (function() {
-  var root = this
+
+  var root = this;
   var previousPyon = root.Pyon;
-  
-  
-  var Pyon = (function() {
+
+
+
+  var PyonObject = (function() {
 
     var rAF = window.requestAnimationFrame ||
       window.webkitRequestAnimationFrame ||
@@ -158,8 +180,9 @@
           if (isFunction(render)) {
             this.rendering = true;
             var presentation = target.presentation;
-            var boundRender = render.bind(presentation);
-            boundRender(presentation,target.modelLayer);
+            var boundRender = render.bind(presentation); // "feckless"
+            boundRender(presentation,target.modelLayer); // "feckless"
+            //render();
             this.rendering = false;
           }
         }.bind(this));
@@ -218,7 +241,7 @@
       };
 
       var valueForKey = function(property) {
-        if (shoeContext.rendering) return receiver.presentation[property];
+        if (shoeContext.rendering) return receiver.presentation[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
         return modelDict[property];
       };
 
@@ -276,7 +299,7 @@
               setValueForKey(value,property);
             },
             enumerable: true,
-            configurable: false
+            configurable: true // temporary, to resolve unterminated
           });
         }
       }
@@ -297,9 +320,12 @@
         enumerable: false
       });
 
+      var debugAccessCount = 0;
       var presentationKey = "presentation"; // Rename "presentationLayer"?
       var presentationComposite = function() {
-        var presentationLayer = {};
+        //var presentationLayer = {};
+        var presentationLayer = Object.create(receiver.modelLayer); // Until we have Proxy, have to use Object.create instead of just using a POJO
+
         var compositor = Object.keys(modelDict).reduce(function(n, k){ n[k] = modelDict[k]; return n;}, {});
 
         Object.keys(compositor).forEach( function(property) {
@@ -309,7 +335,7 @@
         var finishedAnimations = [];
 
         Object.defineProperty(presentationLayer, presentationKey, { // FIX ME // value should be the presentation layer itself
-          value: null,
+          value: presentationLayer,
           enumerable: false,
           configurable: false
         });
@@ -339,10 +365,10 @@
         }
         var compositorKeys = Object.keys(compositor);
         compositorKeys.forEach( function(property) {
-          presentationLayer[property] = compositor[property];
-        }.bind(receiver));
+          //presentationLayer[property] = compositor[property]; // feckless fail, caused unterminated valueForKey when getting presentationLayer
+          Object.defineProperty(presentationLayer, property, {value:compositor[property]}); // feckless pass. Overwrite the setters.
+        });
         registeredProperties.forEach( function(property) {
-
           if (compositorKeys.indexOf(property) === -1) {
             var value = modelDict[property];
             var defaultAnimation = defaultAnimations[property]; // Blend mode zero suffers from conceptual difficulties. don't want to ask for animationForKey again. need to determine presentation value
@@ -388,7 +414,6 @@
         }
         if (!animation instanceof ShoeValue) throw new Error("Animations must be a subclass of Shoe.ValueType.");
         if (!allAnimations.length) shoeContext.registerTarget(receiver);
-
         var copy = animation.copy();
         copy.number = animationNumber++;
         allAnimations.push(copy);
@@ -443,7 +468,7 @@
 
 
 
-    function ShoeValue(settings) { // The base animation class
+    function ShoeAnimation(settings) { // The base animation class
       if (this instanceof ShoeValue === false) {
         throw new Error("ShoeValue is a constructor, not a function. Do not call it directly.");
       }
@@ -470,7 +495,86 @@
       this.startTime; // float
       this.delta;
 
-      this.initial; // Temporary. Does not belong in Pyon change descriptions.
+      if (settings) Object.keys(settings).forEach( function(key) {
+        this[key] = settings[key];
+      }.bind(this));
+
+      this.composite = function(onto,now) {
+
+        if (this.startTime === null || this.startTime === undefined) return this.zero();
+        var elapsed = Math.max(0, now - (this.startTime + this.delay));
+        var speed = this.speed; // might make speed a property of layer, not animation, might not because no sublayers / layer hierarcy yet. Part of GraphicsLayer.
+        var iterationProgress = 1;
+        var combinedProgress = 1;
+        var iterationDuration = this.duration;
+        var combinedDuration = iterationDuration * this.iterations;
+        if (combinedDuration) {
+          iterationProgress = elapsed * speed / iterationDuration;
+          combinedProgress = elapsed * speed / combinedDuration;
+        }
+        if (combinedProgress >= 1) {
+          iterationProgress = 1;
+          this.finished++;// = true;
+        }
+        var inReverse = 0; // falsy
+        if (!this.finished) {
+          if (this.autoreverse === true) inReverse = Math.floor(iterationProgress) % 2;
+          iterationProgress = iterationProgress % 1; // modulus for iterations
+        }
+        if (inReverse) iterationProgress = 1-iterationProgress; // easing is also reversed
+        if (isFunction(this.easing)) iterationProgress = this.easing(iterationProgress);
+        else if (this.easing !== "linear") iterationProgress = 0.5-(Math.cos(iterationProgress * Math.PI) / 2);
+
+        var value = (this.blend === "absolute") ? this.interpolate(this.from,this.to,iterationProgress) : this.interpolate(this.delta,this.zero(),iterationProgress);
+        var property = this.property;
+
+        if (this.additive) onto[property] = this.add(onto[property],value);
+        else onto[property] = value;
+      }
+
+      this.runAnimation = function(layer,key,removalCallback) {
+        if (!this.duration) this.duration = 0.0; // need better validation. Currently is split across constructor, setter, and here
+        if (this.speed === null || this.speed === undefined) this.speed = 1; // need better validation
+        if (this.iterations === null || this.iterations === undefined) this.iterations = 1; // negative values have no effect
+        if (this.blend !== "absolute") this.delta = this.subtract(this.from,this.to);
+        this.completion = function() { // COMPLETION
+          if (!this.fillMode || this.fillMode === "none") {
+            removalCallback(this,key);
+          }
+          if (isFunction(this.onend)) this.onend();
+          this.completion = null; // lazy way to keep compositor from calling this twice, during fill phase
+        }.bind(this);
+        if (this.startTime === null || this.startTime === undefined) this.startTime = shoeContext.currentTransaction().time;
+      }
+    }
+
+
+    function ShoeValue(settings) { // The base animation type
+      if (this instanceof ShoeValue === false) {
+        throw new Error("ShoeValue is a constructor, not a function. Do not call it directly.");
+      }
+      if (this.constructor === ShoeValue) {
+        throw new Error("Shoe.ValueType is an abstract base class.");
+      }
+      this.settings = settings;
+      this.property; // string, property name
+      this.from; // type specific. Subclasses must implement zero, add, subtract and interpolate. invert is no longer used
+      this.to; // type specific. Subclasses must implement zero, add, subtract and interpolate. invert is no longer used
+      this.onend; // NOT FINISHED. callback function, fires regardless of fillMode. Should rename. Should also implement didStart, maybe didTick, etc.
+      this.duration = 0.0; // float. In seconds. Need to validate/ensure >= 0.
+      this.easing; // NOT FINISHED. currently callback function only, need cubic bezier and presets. Defaults to linear
+      this.speed = 1.0; // float. RECONSIDER. Pausing currently not possible like in Core Animation. Layers have speed, beginTime, timeOffset!
+      this.iterations = 1; // float >= 0.
+      this.autoreverse; // boolean. When iterations > 1. Easing also reversed. Maybe should be named "autoreverses", maybe should be camelCased
+      this.fillMode; // string. Defaults to "none". NOT FINISHED. "forwards" and "backwards" are "both". maybe should be named "fill". maybe should just be a boolean
+      this.index = 0; // float. Custom compositing order.
+      this.delay = 0; // float. In seconds.
+      this.blend = "relative"; // also "absolute" or "zero" // Default should be "absolute" if explicit
+      this.additive = true;
+      this.sort;
+      this.finished = 0;//false;
+      this.startTime; // float
+      this.delta;
 
       if (settings) Object.keys(settings).forEach( function(key) {
         this[key] = settings[key];
@@ -759,17 +863,16 @@
   })();
 
 
-  Pyon.noConflict = function() {
+
+//}));
+
+
+  PyonObject.noConflict = function() {
     root.Pyon = previousPyon;
-    return Pyon;
+    return PyonObject;
   }
-
   if (typeof exports !== "undefined") { // http://www.richardrodger.com/2013/09/27/how-to-make-simple-node-js-modules-work-in-the-browser/#.VpuIsTZh2Rs
-    if (typeof module !== "undefined" && module.exports) {
-      exports = module.exports = Pyon;
-    }
-    exports.Pyon = Pyon;
-  } else root.Pyon = Pyon;
-
-
+    if (typeof module !== "undefined" && module.exports) exports = module.exports = PyonObject;
+    exports.Pyon = PyonObject;
+  } else root.Pyon = PyonObject;
 }).call(this);
