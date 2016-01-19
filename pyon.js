@@ -324,10 +324,9 @@ THE SOFTWARE.
       var presentationKey = "presentation"; // Rename "presentationLayer"?
       var presentationComposite = function() {
         //var presentationLayer = {};
-        var presentationLayer = Object.create(receiver.modelLayer); // Until we have Proxy, have to use Object.create
-
-        var compositor = Object.keys(modelDict).reduce(function(n, k){ n[k] = modelDict[k]; return n;}, {});
-
+        var presentationLayer = Object.create(receiver.modelLayer); // Until we have ES6 Proxy, have to use Object.create
+        var compositor = Object.keys(modelDict).reduce(function(a, b) { a[b] = modelDict[b]; return a;}, {});
+        
         Object.keys(compositor).forEach( function(property) {
           var defaultAnimation = defaultAnimations[property];
           if (defaultAnimation instanceof ShoeValue && defaultAnimation.blend === "zero") compositor[property] = defaultAnimation.zero(); // blend mode zero has conceptual difficulties. Animations affect layers in ways beyond what an animation should. zero presentation is more of a layer property, not animation. Default animation is the only thing that can be used. Can't do this from animationForKey
@@ -861,10 +860,6 @@ THE SOFTWARE.
       mixin: Mixin, // To mixin layer functionality in objects that are not ShoeLayer subclasses.
     }
   })();
-
-
-
-//}));
 
 
   Pyon.noConflict = function() {
