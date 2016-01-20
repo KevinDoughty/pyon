@@ -24,10 +24,8 @@ THE SOFTWARE.
 
   var root = this;
   var previousPyon = root.Pyon;
-
-
-
   var Pyon = root.Pyon = (function() {
+  //var Pyon = (function() {
 
     var rAF = window.requestAnimationFrame ||
       window.webkitRequestAnimationFrame ||
@@ -172,7 +170,7 @@ THE SOFTWARE.
       },
       ticker: function() { // Need to manually cancel animation frame if calling directly.
         this.frame = undefined;
-        var targets = this.targets.slice(0);
+        var targets = this.targets.slice(0); // optimize me.
         targets.forEach( function(target) {
           if (!target.animations.length) this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed
           var render = target.delegate.render;
@@ -362,17 +360,18 @@ THE SOFTWARE.
             if (animation.finished > 0) finishedAnimations.push(animation);
           });
         }
+        
         var compositorKeys = Object.keys(compositor);
         compositorKeys.forEach( function(property) {
-          //presentationLayer[property] = compositor[property]; // feckless fail, caused unterminated valueForKey when getting presentationLayer
-          Object.defineProperty(presentationLayer, property, {value:compositor[property]}); // feckless pass. Overwrite the setters.
+          //presentationLayer[property] = compositor[property]; // fail, caused unterminated valueForKey when getting presentationLayer
+          Object.defineProperty(presentationLayer, property, {value:compositor[property], enumerable:true}); // pass. Overwrite the setters.
         });
+        
         registeredProperties.forEach( function(property) {
           if (compositorKeys.indexOf(property) === -1) {
             var value = modelDict[property];
             var defaultAnimation = defaultAnimations[property]; // Blend mode zero suffers from conceptual difficulties. don't want to ask for animationForKey again. need to determine presentation value
             if (defaultAnimation instanceof ShoeValue && defaultAnimation.blend === "zero") value = defaultAnimation.zero();
-            //Object.defineProperty(presentationLayer, property, {value:value});
             presentationLayer[property] = value;
           }
         }.bind(receiver));
@@ -411,6 +410,7 @@ THE SOFTWARE.
         if (!(animation instanceof ShoeValue) && animation !== null && typeof animation === "object") {
           animation = animationFromDescription(animation);
         }
+        
         if (!animation instanceof ShoeValue) throw new Error("Animations must be a subclass of Shoe.ValueType.");
         if (!allAnimations.length) shoeContext.registerTarget(receiver);
         var copy = animation.copy();
@@ -628,7 +628,7 @@ THE SOFTWARE.
       }
     }
     ShoeValue.prototype = {
-      copy: function() {
+      copy: function() { // optimize me // "Not Optimized. Reference to a variable that requires dynamic lookup"
         //return Object.create(this);
         var constructor = this.constructor;
         var copy = new constructor(this.settings);
@@ -843,9 +843,10 @@ THE SOFTWARE.
       ScaleType: ShoeScale, // For animating transform scale
       ArrayType: ShoeArray, // For animating arrays of other value types
       SetType: ShoeSet, // Discrete object collection changes
-      //beginTransaction: shoeContext.beginTransaction.bind(shoeContext),
-      //commitTransaction: shoeContext.commitTransaction.bind(shoeContext),
-      //flushTransaction: shoeContext.flushTransaction.bind(shoeContext),
+      beginTransaction: shoeContext.beginTransaction.bind(shoeContext),
+      commitTransaction: shoeContext.commitTransaction.bind(shoeContext),
+      flushTransaction: shoeContext.flushTransaction.bind(shoeContext),
+      currentTransaction: shoeContext.currentTransaction.bind(shoeContext),
       disableAnimation: shoeContext.disableAnimation.bind(shoeContext),
 
       addAnimation: shoeContext.addAnimation.bind(shoeContext),
@@ -861,7 +862,7 @@ THE SOFTWARE.
     }
   })();
 
-
+  
   Pyon.noConflict = function() {
     root.Pyon = previousPyon;
     return Pyon;
@@ -870,4 +871,7 @@ THE SOFTWARE.
     if (typeof module !== "undefined" && module.exports) exports = module.exports = Pyon;
     exports.Pyon = Pyon;
   } else root.Pyon = Pyon;
+  
+  //if (typeof module !== "undefined" && typeof module.exports !== "undefined") module.exports = Pyon; // http://www.matteoagosti.com/blog/2013/02/24/writing-javascript-modules-for-both-browser-and-node/
+  //else window.Pyon = Pyon;
 }).call(this);
