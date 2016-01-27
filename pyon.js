@@ -114,7 +114,7 @@ THE SOFTWARE.
       };
       this.presentationLayer = function(object) {
         var mixin = this.mixinForModelLayer(object);
-        if (mixin) return mixin.presentation;
+        if (mixin) return mixin.presentationLayer;
         return object; // oh yeah?
       };
       this.registerAnimatableProperty = function(object,property,defaultValue) {
@@ -170,7 +170,8 @@ THE SOFTWARE.
       },
       ticker: function() { // Need to manually cancel animation frame if calling directly.
         this.frame = undefined;
-        var targets = this.targets.slice(0); // optimize me.
+        /*
+        var targets = this.targets.slice(0); // optimize me. Maybe I can skip copying if I traverse backwards.
         targets.forEach( function(target) {
           if (!target.animations.length) this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed
           var render = target.delegate.render;
@@ -184,6 +185,24 @@ THE SOFTWARE.
             this.rendering = false;
           }
         }.bind(this));
+        */
+        var targets = this.targets; // experimental optimization, traverse backwards so you can remove. This has caused problems for me before, but I don't think I was traversing backwards.
+        var i = targets.length;
+        while (i--) {
+          var target = targets[i];
+          if (!target.animations.length) this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed
+          var render = target.delegate.render;
+          if (!isFunction(render)) render = target.render;
+          if (isFunction(render)) {
+            this.rendering = true;
+            var presentationLayer = target.presentationLayer;
+            var boundRender = render.bind(presentationLayer); // "feckless"
+            //boundRender(presentationLayer,target.modelLayer); // "feckless"
+            boundRender(); // "feckless"
+            //render();
+            this.rendering = false;
+          }
+        }
         var length = this.transactions.length;
         if (length) {
           var transaction = this.transactions[length-1];
@@ -214,7 +233,7 @@ THE SOFTWARE.
         return animation;
       };
 
-    function Mixin(receiver,modelLayer,delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
+    function Mixin(receiver,modelInstance,delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
       var modelDict = {};
       var registeredProperties = [];
       var allAnimations = [];
@@ -224,72 +243,74 @@ THE SOFTWARE.
       var shouldSortAnimations = false;
       var animationNumber = 0; // order added
 
-      if (modelLayer === null || modelLayer === undefined) modelLayer = receiver;
-      receiver.modelLayer = modelLayer;
+      if (modelInstance === null || modelInstance === undefined) modelInstance = receiver;
+      //receiver.modelInstance = modelInstance;
 
-      if (delegate === null || delegate === undefined) delegate = modelLayer;
+      if (delegate === null || delegate === undefined) delegate = modelInstance;
       receiver.delegate = delegate;
 
       var implicitAnimation = function(property,value) {
         var description;
-        if (isFunction(delegate.animationForKey)) description = delegate.animationForKey(property,value,receiver.modelLayer);
+        //if (isFunction(delegate.animationForKey)) description = delegate.animationForKey(property,value,receiver.modelInstance);
+        if (isFunction(delegate.animationForKey)) description = delegate.animationForKey(property,value);
         var animation = animationFromDescription(description);
         if (!animation) animation = animationFromDescription(defaultAnimations[property]);
         return animation;
       };
 
       var valueForKey = function(property) {
-        if (shoeContext.rendering) return receiver.presentation[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
+        if (shoeContext.rendering) return receiver.presentationLayer[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
         return modelDict[property];
       };
 
       var setValueForKey = function(value,property) {
+        // No animation if no change is fine, but I have to prevent react-pyon presentation from calling this.
         if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal
         var animation;
         var transaction = shoeContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
         if (!transaction.disableAnimation) {
           animation = implicitAnimation(property,value);
           if (animation) {
-            if (animation.property === null || animation.property === undefined) animation.property = property;
-            if (animation.from === null || animation.from === undefined) {
-              if (animation.blend === "absolute") animation.from = receiver.presentation[property]; // use presentation layer
+            if (animation.property === null || typeof animation.property === "undefined") animation.property = property;
+            if (animation.from === null || typeof animation.from === "undefined") {
+              if (animation.blend === "absolute") animation.from = receiver.presentationLayer[property]; // use presentation layer
               else animation.from = modelDict[property];
             }
-            if (animation.to === null || animation.to === undefined) animation.to = value;
+            if (animation.to === null || typeof animation.to === "undefined") animation.to = value;
             receiver.addAnimation(animation); // this will copy a second time.
           }
         }
         modelDict[property] = value;
-
+        
         if (!animation) { // need to manually call render on property value change without animation. transactions.
           var render = delegate.render;
           if (!isFunction(render)) render = receiver.render;
           if (isFunction(render)) {
             shoeContext.rendering = true;
-            var presentation = receiver.presentation;
-            var boundRender = render.bind(presentation);
-            boundRender(presentation,receiver.modelLayer);
+            var presentationLayer = receiver.presentationLayer;
+            var boundRender = render.bind(presentationLayer);
+            //boundRender(presentationLayer,receiver.modelInstance);
+            boundRender();
             shoeContext.rendering = false;
           }
         }
       };
-
+      
       receiver.registerAnimatableProperty = function(property, defaultValue) { // Needed to trigger implicit animation.
         if (registeredProperties.indexOf(property) === -1) registeredProperties.push(property);
-
-        var descriptor = Object.getOwnPropertyDescriptor(modelLayer, property);
-        if (descriptor && descriptor.configurable === false) { // need automatic registration
+        var descriptor = Object.getOwnPropertyDescriptor(modelInstance, property);
+        //if (descriptor && descriptor.configurable === false) { // need automatic registration
           // Fail silently so you can set default animation by registering it again
           //return;
-        }
+        //}
         var defaultAnimation = animationFromDescription(defaultValue);
-
+        
         if (defaultAnimation) defaultAnimations[property] = defaultAnimation; // maybe set to defaultValue not defaultAnimation
         else if (defaultAnimations[property]) delete defaultAnimations[property]; // property is still animatable
-
+        
         if (!descriptor || descriptor.configurable === true) {
-          modelDict[property] = modelLayer[property];
-          Object.defineProperty(modelLayer, property, { // ACCESSORS
+          modelDict[property] = modelInstance[property];
+          Object.defineProperty(modelInstance, property, { // ACCESSORS
             get: function() {
               return valueForKey(property);
             },
@@ -301,7 +322,7 @@ THE SOFTWARE.
           });
         }
       }
-
+      
       Object.defineProperty(receiver, "animations", {
         get: function() {
           return allAnimations.map(function (animation) {
@@ -311,18 +332,35 @@ THE SOFTWARE.
         enumerable: false,
         configurable: false
       });
-      Object.defineProperty(receiver, "animationKeys", {
+      
+      Object.defineProperty(receiver, "animationNames", {
         get: function() {
           return Object.keys(namedAnimations);
         },
-        enumerable: false
+        enumerable: false,
+        configurable: false
       });
-
+      
+      Object.defineProperty(receiver, "modelLayer", {
+        get: function() {
+          var modelLayer = Object.create(modelInstance); // modelInstance has defined properties. Must redefine.
+          registeredProperties.forEach( function(item,index) {
+            Object.defineProperty(modelLayer, item, {
+              value: modelDict[item],
+              enumerable: true,
+              configurable: false
+            });
+          }.bind(this));
+          return modelLayer;
+        },
+        enumerable: true,
+        configurable: false
+      });
+      
       var debugAccessCount = 0;
-      var presentationKey = "presentation"; // Rename "presentationLayer"?
-      var presentationComposite = function() {
-        //var presentationLayer = {};
-        var presentationLayer = Object.create(receiver.modelLayer); // Until we have ES6 Proxy, have to use Object.create
+      var presentationComposite = function() { // TODO: optimize me // return modelLayer if there are no animations
+        //var presentationLayer = {}; // This does not work because an implementation's render function would otherwise not get non-animated properties like this.element
+        var presentationLayer = Object.create(modelInstance); // Until we have ES6 Proxy, have to use Object.create. // You need this so render has non animated properties like this.element // modelInstance becomes prototype
         var compositor = Object.keys(modelDict).reduce(function(a, b) { a[b] = modelDict[b]; return a;}, {});
         
         Object.keys(compositor).forEach( function(property) {
@@ -331,7 +369,7 @@ THE SOFTWARE.
         });
         var finishedAnimations = [];
 
-        Object.defineProperty(presentationLayer, presentationKey, { // FIX ME // value should be the presentation layer itself
+        Object.defineProperty(presentationLayer, "presentationLayer", { // FIX ME // value should be the presentation layer itself
           value: presentationLayer,
           enumerable: false,
           configurable: false
@@ -379,18 +417,18 @@ THE SOFTWARE.
         finishedAnimations.forEach( function(animation) {
           if (isFunction(animation.completion)) animation.completion();
         });
-
+        
         return presentationLayer;
       }
-
-      Object.defineProperty(receiver, presentationKey, { // COMPOSITING. Have separate compositor object?
+      
+      Object.defineProperty(receiver, "presentationLayer", { // COMPOSITING. Have separate compositor object?
         get: function() { // need transactions and cache presentation layer
           return presentationComposite();
         },
         enumerable: false,
         configurable: false
       });
-
+      
       /*
       receiver.needsDisplay = function() {
         // This should be used instead of directly calling render
@@ -410,6 +448,7 @@ THE SOFTWARE.
         if (!(animation instanceof ShoeValue) && animation !== null && typeof animation === "object") {
           animation = animationFromDescription(animation);
         }
+        //console.log("Pyon addAnimation:%s; property:%s; name:%s;",JSON.stringify(animation),animation.property,name);
         
         if (!animation instanceof ShoeValue) throw new Error("Animations must be a subclass of Shoe.ValueType.");
         if (!allAnimations.length) shoeContext.registerTarget(receiver);
@@ -467,87 +506,6 @@ THE SOFTWARE.
 
 
 
-    function ShoeAnimation(settings) { // The base animation class
-      if (this instanceof ShoeValue === false) {
-        throw new Error("ShoeValue is a constructor, not a function. Do not call it directly.");
-      }
-      if (this.constructor === ShoeValue) {
-        throw new Error("Shoe.ValueType is an abstract base class.");
-      }
-      this.settings = settings;
-      this.property; // string, property name
-      this.from; // type specific. Subclasses must implement zero, add, subtract and interpolate. invert is no longer used
-      this.to; // type specific. Subclasses must implement zero, add, subtract and interpolate. invert is no longer used
-      this.onend; // NOT FINISHED. callback function, fires regardless of fillMode. Should rename. Should also implement didStart, maybe didTick, etc.
-      this.duration = 0.0; // float. In seconds. Need to validate/ensure >= 0.
-      this.easing; // NOT FINISHED. currently callback function only, need cubic bezier and presets. Defaults to linear
-      this.speed = 1.0; // float. RECONSIDER. Pausing currently not possible like in Core Animation. Layers have speed, beginTime, timeOffset!
-      this.iterations = 1; // float >= 0.
-      this.autoreverse; // boolean. When iterations > 1. Easing also reversed. Maybe should be named "autoreverses", maybe should be camelCased
-      this.fillMode; // string. Defaults to "none". NOT FINISHED. "forwards" and "backwards" are "both". maybe should be named "fill". maybe should just be a boolean
-      this.index = 0; // float. Custom compositing order.
-      this.delay = 0; // float. In seconds.
-      this.blend = "relative"; // also "absolute" or "zero" // Default should be "absolute" if explicit
-      this.additive = true;
-      this.sort;
-      this.finished = 0;//false;
-      this.startTime; // float
-      this.delta;
-
-      if (settings) Object.keys(settings).forEach( function(key) {
-        this[key] = settings[key];
-      }.bind(this));
-
-      this.composite = function(onto,now) {
-
-        if (this.startTime === null || this.startTime === undefined) return this.zero();
-        var elapsed = Math.max(0, now - (this.startTime + this.delay));
-        var speed = this.speed; // might make speed a property of layer, not animation, might not because no sublayers / layer hierarcy yet. Part of GraphicsLayer.
-        var iterationProgress = 1;
-        var combinedProgress = 1;
-        var iterationDuration = this.duration;
-        var combinedDuration = iterationDuration * this.iterations;
-        if (combinedDuration) {
-          iterationProgress = elapsed * speed / iterationDuration;
-          combinedProgress = elapsed * speed / combinedDuration;
-        }
-        if (combinedProgress >= 1) {
-          iterationProgress = 1;
-          this.finished++;// = true;
-        }
-        var inReverse = 0; // falsy
-        if (!this.finished) {
-          if (this.autoreverse === true) inReverse = Math.floor(iterationProgress) % 2;
-          iterationProgress = iterationProgress % 1; // modulus for iterations
-        }
-        if (inReverse) iterationProgress = 1-iterationProgress; // easing is also reversed
-        if (isFunction(this.easing)) iterationProgress = this.easing(iterationProgress);
-        else if (this.easing !== "linear") iterationProgress = 0.5-(Math.cos(iterationProgress * Math.PI) / 2);
-
-        var value = (this.blend === "absolute") ? this.interpolate(this.from,this.to,iterationProgress) : this.interpolate(this.delta,this.zero(),iterationProgress);
-        var property = this.property;
-
-        if (this.additive) onto[property] = this.add(onto[property],value);
-        else onto[property] = value;
-      }
-
-      this.runAnimation = function(layer,key,removalCallback) {
-        if (!this.duration) this.duration = 0.0; // need better validation. Currently is split across constructor, setter, and here
-        if (this.speed === null || this.speed === undefined) this.speed = 1; // need better validation
-        if (this.iterations === null || this.iterations === undefined) this.iterations = 1; // negative values have no effect
-        if (this.blend !== "absolute") this.delta = this.subtract(this.from,this.to);
-        this.completion = function() { // COMPLETION
-          if (!this.fillMode || this.fillMode === "none") {
-            removalCallback(this,key);
-          }
-          if (isFunction(this.onend)) this.onend();
-          this.completion = null; // lazy way to keep compositor from calling this twice, during fill phase
-        }.bind(this);
-        if (this.startTime === null || this.startTime === undefined) this.startTime = shoeContext.currentTransaction().time;
-      }
-    }
-
-
     function ShoeValue(settings) { // The base animation type
       if (this instanceof ShoeValue === false) {
         throw new Error("ShoeValue is a constructor, not a function. Do not call it directly.");
@@ -567,7 +525,7 @@ THE SOFTWARE.
       this.autoreverse; // boolean. When iterations > 1. Easing also reversed. Maybe should be named "autoreverses", maybe should be camelCased
       this.fillMode; // string. Defaults to "none". NOT FINISHED. "forwards" and "backwards" are "both". maybe should be named "fill". maybe should just be a boolean
       this.index = 0; // float. Custom compositing order.
-      this.delay = 0; // float. In seconds.
+      this.delay = 0; // float. In seconds. // TODO: easing should be taken in effect after the delay
       this.blend = "relative"; // also "absolute" or "zero" // Default should be "absolute" if explicit
       this.additive = true;
       this.sort;
@@ -580,7 +538,6 @@ THE SOFTWARE.
       }.bind(this));
 
       this.composite = function(onto,now) {
-
         if (this.startTime === null || this.startTime === undefined) return this.zero();
         var elapsed = Math.max(0, now - (this.startTime + this.delay));
         var speed = this.speed; // might make speed a property of layer, not animation, might not because no sublayers / layer hierarcy yet. Part of GraphicsLayer.
