@@ -20,12 +20,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 "use strict";
-;(function() {
+(function() {
 
   var root = this;
   var previousPyon = root.Pyon;
   var Pyon = root.Pyon = (function() {
-  //var Pyon = (function() {
 
     var rAF = window.requestAnimationFrame ||
       window.webkitRequestAnimationFrame ||
@@ -48,13 +47,10 @@ THE SOFTWARE.
       return !isNaN(parseFloat(w)) && isFinite(w); // I want infinity for repeat count. Probably not duration
     }
 
-
-
     function ShoeTransaction(settings,automaticallyCommit) {
       this.time = performance.now() / 1000; // value should probably be inherited from parent transaction
       this.disableAnimation = false; // value should probably be inherited from parent transaction
-      //this.layers = {}; // TODO: Cache presentation layers so you don't have to repeatedly calculate?
-      this.automaticallyCommit = automaticallyCommit;
+      this._automaticallyCommit = automaticallyCommit;
       this.settings = settings;
     }
 
@@ -69,13 +65,14 @@ THE SOFTWARE.
 
       this.mixins = [];
       this.modelLayers = []; // model layers // TODO: Cache presentation layers so you don't have to repeatedly calculate?
+      this.renderLayers = []; // cachedPresentationLayer
       this.unlayerize = function(modelLayer) {
       };
       this.layerize = function(modelLayer,delegate) {
         var mixin = this.mixinForModelLayer(modelLayer);
         if (!mixin) {
           mixin = {};
-          Mixin(mixin,modelLayer,delegate);
+          Pyonify(mixin,modelLayer,delegate);
           this.mixins.push(mixin);
           this.modelLayers.push(modelLayer);
         } else {
@@ -88,7 +85,7 @@ THE SOFTWARE.
         var mixin = this.mixinForModelLayer(modelLayer);
         if (!mixin) { // maybe require layerize() rather than lazy create
           mixin = {};
-          Mixin(mixin,modelLayer);
+          Pyonify(mixin,modelLayer);
           this.mixins.push(mixin);
           this.modelLayers.push(modelLayer);
         }
@@ -158,56 +155,53 @@ THE SOFTWARE.
       registerTarget: function(target) {
         this.startTicking();
         var index = this.targets.indexOf(target);
-        if (index < 0) this.targets.push(target);
+        if (index < 0) {
+          this.targets.push(target);
+          this.renderLayers.push(null); // cachedPresentationLayer
+        }
       },
 
       deregisterTarget: function(target) {
         var index = this.targets.indexOf(target);
-        if (index > -1) this.targets.splice(index, 1);
+        if (index > -1) {
+          this.targets.splice(index, 1);
+          this.renderLayers.splice(index, 1); // cachedPresentationLayer
+        }
       },
       startTicking: function() {
         if (!this.frame) this.frame = rAF(this.ticker.bind(this));
       },
       ticker: function() { // Need to manually cancel animation frame if calling directly.
         this.frame = undefined;
-        /*
-        var targets = this.targets.slice(0); // optimize me. Maybe I can skip copying if I traverse backwards.
-        targets.forEach( function(target) {
-          if (!target.animations.length) this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed
-          var render = target.delegate.render;
-          if (!isFunction(render)) render = target.render;
-          if (isFunction(render)) {
-            this.rendering = true;
-            var presentation = target.presentation;
-            var boundRender = render.bind(presentation); // "feckless"
-            boundRender(presentation,target.modelLayer); // "feckless"
-            //render();
-            this.rendering = false;
-          }
-        }.bind(this));
-        */
         var targets = this.targets; // experimental optimization, traverse backwards so you can remove. This has caused problems for me before, but I don't think I was traversing backwards.
         var i = targets.length;
+        
         while (i--) {
           var target = targets[i];
           if (!target.animations.length) this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed
+          
           var render = target.delegate.render;
           if (!isFunction(render)) render = target.render;
           if (isFunction(render)) {
             this.rendering = true;
             var presentationLayer = target.presentationLayer;
-            var boundRender = render.bind(presentationLayer); // "feckless"
-            //boundRender(presentationLayer,target.modelLayer); // "feckless"
-            boundRender(); // "feckless"
+            if (this.renderLayers[i] !== presentationLayer) { // This is a poor way to suppress unnecessary renders
+              this.renderLayers[i] = presentationLayer; // cachedPresentationLayer
+              var boundRender = render.bind(presentationLayer);
+              //boundRender(presentationLayer,target.modelLayer);
+              boundRender();
+            }
             //render();
             this.rendering = false;
           }
         }
+        
         var length = this.transactions.length;
         if (length) {
           var transaction = this.transactions[length-1];
-          if (transaction.automaticallyCommit) this.commitTransaction();
+          if (transaction._automaticallyCommit) this.commitTransaction();
         }
+        
         if (this.targets.length) this.startTicking();
       }
     }
@@ -219,21 +213,17 @@ THE SOFTWARE.
 
     var shoeContext = new ShoeContext();
 
-    var animationFromDescription = function(description) {
+      var animationFromDescription = function(description) {
         var animation;
-        if (description && description instanceof ShoeValue) {
+        if (description && description instanceof ShoeAnimation) {
           animation = description.copy();
-        } else if (description && isFunction(description)) {
-          animation = new description(); // TODO: Need transaction duration if animation not disabled !!!
         } else if (description && typeof description === "object") {
-          if (isFunction(description.type)) animation = new description.type(description);
-          else animation = new ShoeNumber(description);
-          if (!animation instanceof ShoeValue) animation = null;
-        } else if (isNumber(description)) animation = new ShoeNumber({duration:description});
+          animation = new ShoeAnimation(description);
+        } else if (isNumber(description)) animation = new ShoeAnimation({duration:description});
         return animation;
       };
 
-    function Mixin(receiver,modelInstance,delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
+    function Pyonify(receiver,modelInstance,delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
       var modelDict = {};
       var registeredProperties = [];
       var allAnimations = [];
@@ -242,16 +232,17 @@ THE SOFTWARE.
       //var animationCount = 0; // need to implement auto increment key
       var shouldSortAnimations = false;
       var animationNumber = 0; // order added
+      
+      var cachedPresentationLayer = null;
+      var cachedPresentationTime = -1;
 
       if (modelInstance === null || modelInstance === undefined) modelInstance = receiver;
-      //receiver.modelInstance = modelInstance;
 
       if (delegate === null || delegate === undefined) delegate = modelInstance;
       receiver.delegate = delegate;
 
       var implicitAnimation = function(property,value) {
         var description;
-        //if (isFunction(delegate.animationForKey)) description = delegate.animationForKey(property,value,receiver.modelInstance);
         if (isFunction(delegate.animationForKey)) description = delegate.animationForKey(property,value);
         var animation = animationFromDescription(description);
         if (!animation) animation = animationFromDescription(defaultAnimations[property]);
@@ -259,13 +250,14 @@ THE SOFTWARE.
       };
 
       var valueForKey = function(property) {
-        if (shoeContext.rendering) return receiver.presentationLayer[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
+        //if (shoeContext.rendering) return receiver.presentationLayer[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
+        if (shoeContext.rendering && cachedPresentationLayer) return cachedPresentationLayer[property];
         return modelDict[property];
       };
 
       var setValueForKey = function(value,property) {
         // No animation if no change is fine, but I have to prevent react-pyon presentation from calling this.
-        if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal
+        if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal (if you're not careful)
         var animation;
         var transaction = shoeContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
         if (!transaction.disableAnimation) {
@@ -281,19 +273,9 @@ THE SOFTWARE.
           }
         }
         modelDict[property] = value;
-        
-        if (!animation) { // need to manually call render on property value change without animation. transactions.
-          var render = delegate.render;
-          if (!isFunction(render)) render = receiver.render;
-          if (isFunction(render)) {
-            shoeContext.rendering = true;
-            var presentationLayer = receiver.presentationLayer;
-            var boundRender = render.bind(presentationLayer);
-            //boundRender(presentationLayer,receiver.modelInstance);
-            boundRender();
-            shoeContext.rendering = false;
-          }
-        }
+        cachedPresentationLayer = null;
+
+        if (!animation) receiver.needsDisplay();
       };
       
       receiver.registerAnimatableProperty = function(property, defaultValue) { // Needed to trigger implicit animation.
@@ -365,7 +347,7 @@ THE SOFTWARE.
         
         Object.keys(compositor).forEach( function(property) {
           var defaultAnimation = defaultAnimations[property];
-          if (defaultAnimation instanceof ShoeValue && defaultAnimation.blend === "zero") compositor[property] = defaultAnimation.zero(); // blend mode zero has conceptual difficulties. Animations affect layers in ways beyond what an animation should. zero presentation is more of a layer property, not animation. Default animation is the only thing that can be used. Can't do this from animationForKey
+          if (defaultAnimation instanceof ShoeAnimation && defaultAnimation.blend === "zero") compositor[property] = defaultAnimation.type.zero(); // deprecate me // blend mode zero has conceptual difficulties. Animations affect layers in ways beyond what an animation should. zero presentation is more of a layer property, not animation. Default animation is the only thing that can be used. Can't do this from animationForKey
         });
         var finishedAnimations = [];
 
@@ -387,16 +369,22 @@ THE SOFTWARE.
           });
           shouldSortAnimations = false;
         }
-
+        
+        var progressChanged = false;
         if (allAnimations.length) { // Pyon bug fix! Do not create a transaction if there are no animations else the transaction will not be automatically closed.
           var transaction = shoeContext.currentTransaction();
           var now = transaction.time;
 
           allAnimations.forEach( function(animation) {
-            animation.composite(compositor,now);
+            progressChanged = animation.composite(compositor,now) || progressChanged;
             if (animation.finished > 1) throw new Error("Animation finishing twice is not possible");
             if (animation.finished > 0) finishedAnimations.push(animation);
           });
+        }
+        
+        if (!progressChanged && !finishedAnimations.length) {
+          if (!cachedPresentationLayer) cachedPresentationLayer = presentationLayer;
+          else return cachedPresentationLayer; // experimental optimization
         }
         
         var compositorKeys = Object.keys(compositor);
@@ -409,7 +397,7 @@ THE SOFTWARE.
           if (compositorKeys.indexOf(property) === -1) {
             var value = modelDict[property];
             var defaultAnimation = defaultAnimations[property]; // Blend mode zero suffers from conceptual difficulties. don't want to ask for animationForKey again. need to determine presentation value
-            if (defaultAnimation instanceof ShoeValue && defaultAnimation.blend === "zero") value = defaultAnimation.zero();
+            if (defaultAnimation instanceof ShoeAnimation && defaultAnimation.blend === "zero") value = defaultAnimation.type.zero(); // deprecate me
             presentationLayer[property] = value;
           }
         }.bind(receiver));
@@ -417,6 +405,7 @@ THE SOFTWARE.
         finishedAnimations.forEach( function(animation) {
           if (isFunction(animation.completion)) animation.completion();
         });
+        cachedPresentationLayer = presentationLayer;
         
         return presentationLayer;
       }
@@ -429,11 +418,12 @@ THE SOFTWARE.
         configurable: false
       });
       
-      /*
+      
       receiver.needsDisplay = function() {
         // This should be used instead of directly calling render
+        shoeContext.registerTarget(receiver);
       }
-      */
+      
       var removeAnimationInstance = function(animation) {
         var index = allAnimations.indexOf(animation);
         if (index > -1) allAnimations.splice(index,1); // do not deregister yet, must ensure one more tick
@@ -445,12 +435,11 @@ THE SOFTWARE.
       }
 
       receiver.addAnimation = function(animation,name) { // should be able to pass a description if type is registered
-        if (!(animation instanceof ShoeValue) && animation !== null && typeof animation === "object") {
+        if (!(animation instanceof ShoeAnimation) && animation !== null && typeof animation === "object") {
           animation = animationFromDescription(animation);
         }
-        //console.log("Pyon addAnimation:%s; property:%s; name:%s;",JSON.stringify(animation),animation.property,name);
         
-        if (!animation instanceof ShoeValue) throw new Error("Animations must be a subclass of Shoe.ValueType.");
+        if (typeof animation === "undefined" || animation === null || !animation instanceof ShoeAnimation) throw new Error("Animations must be a Shoe.Animation or subclass.");
         if (!allAnimations.length) shoeContext.registerTarget(receiver);
         var copy = animation.copy();
         copy.number = animationNumber++;
@@ -485,7 +474,7 @@ THE SOFTWARE.
 
 
     function ShoeLayer() { // Meant to be subclassed to provide implicit animation and clear distinction between model/presentation values
-      Mixin(this);
+      Pyonify(this);
     }
     ShoeLayer.prototype = {};
     ShoeLayer.prototype.constructor = ShoeLayer;
@@ -506,12 +495,14 @@ THE SOFTWARE.
 
 
 
-    function ShoeValue(settings) { // The base animation type
-      if (this instanceof ShoeValue === false) {
-        throw new Error("ShoeValue is a constructor, not a function. Do not call it directly.");
+
+
+function ShoeAnimation(settings) { // The base animation type
+      if (this instanceof ShoeAnimation === false) {
+        throw new Error("Pyon.Animation is a constructor, not a function. Do not call it directly.");
       }
-      if (this.constructor === ShoeValue) {
-        throw new Error("Shoe.ValueType is an abstract base class.");
+      if (this.constructor === ShoeAnimation) {
+        //throw new Error("Pyon.Animation is an abstract base class.");
       }
       this.settings = settings;
       this.property; // string, property name
@@ -532,13 +523,18 @@ THE SOFTWARE.
       this.finished = 0;//false;
       this.startTime; // float
       this.delta;
+      this.type = ShoeNumber;
+      this.progress = null;
 
       if (settings) Object.keys(settings).forEach( function(key) {
         this[key] = settings[key];
       }.bind(this));
+    }
 
-      this.composite = function(onto,now) {
-        if (this.startTime === null || this.startTime === undefined) return this.zero();
+    ShoeAnimation.prototype = {
+      constructor: ShoeAnimation,
+      composite: function(onto,now) {
+        if (this.startTime === null || this.startTime === undefined) return this.type.zero();
         var elapsed = Math.max(0, now - (this.startTime + this.delay));
         var speed = this.speed; // might make speed a property of layer, not animation, might not because no sublayers / layer hierarcy yet. Part of GraphicsLayer.
         var iterationProgress = 1;
@@ -560,31 +556,63 @@ THE SOFTWARE.
         }
         if (inReverse) iterationProgress = 1-iterationProgress; // easing is also reversed
         if (isFunction(this.easing)) iterationProgress = this.easing(iterationProgress);
-        else if (this.easing !== "linear") iterationProgress = 0.5-(Math.cos(iterationProgress * Math.PI) / 2);
-
-        var value = (this.blend === "absolute") ? this.interpolate(this.from,this.to,iterationProgress) : this.interpolate(this.delta,this.zero(),iterationProgress);
+        else if (this.easing === "step-start") iterationProgress = Math.ceil(iterationProgress);
+        else if (this.easing === "step-middle") iterationProgress = Math.round(iterationProgress);
+        else if (this.easing === "step-end") iterationProgress = Math.floor(iterationProgress);
+        else { 
+          // TODO: match web-animations syntax
+          // TODO: refine regex, perform once in runAnimation 
+         
+          var rounded = 0.5-(Math.cos(iterationProgress * Math.PI) / 2);
+          if (this.easing) {
+            var steps = /(step-start|step-middle|step-end|steps)\((\d+)\)/.exec(this.easing);
+            if (steps) {
+              var desc = steps[1];
+              var count = steps[2];
+              if (count > 0) {
+                if (desc === "step-start") iterationProgress = Math.ceil(iterationProgress * count) / count;
+                else if (desc === "step-middle") iterationProgress = Math.round(iterationProgress * count) / count;
+                else if (desc === "step-end" || desc === "steps") iterationProgress = Math.floor(iterationProgress * count) / count;
+              } else if (this.easing !== "linear") iterationProgress = rounded;
+            } else if (this.easing !== "linear") iterationProgress = rounded;
+          } else iterationProgress = rounded;
+        }
+        var value = (this.blend === "absolute") ? this.type.interpolate(this.from,this.to,iterationProgress) : this.type.interpolate(this.delta,this.type.zero(this.to),iterationProgress); // sending argument to zero() for css transforms
         var property = this.property;
+        
+        var result = value;
+        if (this.additive) result = this.type.add(onto[property],value);
 
-        if (this.additive) onto[property] = this.add(onto[property],value);
-        else onto[property] = value;
-      }
+        if (this.sort && Array.isArray(result)) result.sort(this.sort);
+        onto[property] = result;
+        
+        var changed = (iterationProgress !== this.progress);
+        
+        this.progress = iterationProgress;
+        return changed;
+      },
 
-      this.runAnimation = function(layer,key,removalCallback) {
-        if (!this.duration) this.duration = 0.0; // need better validation. Currently is split across constructor, setter, and here
-        if (this.speed === null || this.speed === undefined) this.speed = 1; // need better validation
-        if (this.iterations === null || this.iterations === undefined) this.iterations = 1; // negative values have no effect
-        if (this.blend !== "absolute") this.delta = this.subtract(this.from,this.to);
-        this.completion = function() { // COMPLETION
-          if (!this.fillMode || this.fillMode === "none") {
-            removalCallback(this,key);
-          }
-          if (isFunction(this.onend)) this.onend();
-          this.completion = null; // lazy way to keep compositor from calling this twice, during fill phase
-        }.bind(this);
-        if (this.startTime === null || this.startTime === undefined) this.startTime = shoeContext.currentTransaction().time;
-      }
-    }
-    ShoeValue.prototype = {
+      runAnimation: function(layer,key,removalCallback) {
+        if (isFunction(this.type)) this.type = new this.type();
+        if (isFunction(this.type.zero) && isFunction(this.type.add) && isFunction(this.type.subtract) && isFunction(this.type.interpolate)) {
+          if (!this.duration) this.duration = 0.0; // need better validation. Currently is split across constructor, setter, and here
+          if (this.speed === null || this.speed === undefined) this.speed = 1; // need better validation
+          if (this.iterations === null || this.iterations === undefined) this.iterations = 1; // negative values have no effect
+          if (this.blend !== "absolute") this.delta = this.type.subtract(this.from,this.to);
+          
+          this.completion = function() { // COMPLETION
+            if (!this.fillMode || this.fillMode === "none") {
+              removalCallback(this,key);
+            }
+            if (isFunction(this.onend)) this.onend();
+            this.completion = null; // lazy way to keep compositor from calling this twice, during fill phase
+          }.bind(this);
+          if (this.startTime === null || this.startTime === undefined) this.startTime = shoeContext.currentTransaction().time;
+        } else {
+          throw new Error("Pyon.Animation runAnimation invalid type. Must implement zero, add, subtract, and interpolate.");
+        }
+      },
+    
       copy: function() { // optimize me // "Not Optimized. Reference to a variable that requires dynamic lookup"
         //return Object.create(this);
         var constructor = this.constructor;
@@ -595,21 +623,32 @@ THE SOFTWARE.
           Object.defineProperty(copy, keys[i], Object.getOwnPropertyDescriptor(this, keys[i]));
         }
         return copy;
-      },
-      validate: function(value) {
-        return true;
-      },
+      }
+    }
+
+
+
+    function ShoeValue(settings) { // The base animation type
+      if (this instanceof ShoeValue === false) {
+        throw new Error("Pyon.ValueType is a constructor, not a function. Do not call it directly.");
+      }
+      if (this.constructor === ShoeValue) {
+        throw new Error("Pyon.ValueType is an abstract base class.");
+      }
+    }
+    
+    ShoeValue.prototype = {
       zero: function() {
-        throw new Error("Shoe.ValueType subclasses must implement function: zero()");
+        throw new Error("Pyon.ValueType subclasses must implement function: zero()");
       },
       add: function() {
-        throw new Error("Shoe.ValueType subclasses must implement function: add(a,b)");
+        throw new Error("Pyon.ValueType subclasses must implement function: add(a,b)");
       },
       subtract: function() {
-        throw new Error("Shoe.ValueType subclasses must implement function: subtract(a,b) in the form subtract b from a");
+        throw new Error("Pyon.ValueType subclasses must implement function: subtract(a,b) in the form subtract b from a");
       },
       interpolate: function() {
-        throw new Error("Shoe.ValueType subclasses must implement function: interpolate(a,b,progress)");
+        throw new Error("Pyon.ValueType subclasses must implement function: interpolate(a,b,progress)");
       }
     }
 
@@ -706,79 +745,17 @@ THE SOFTWARE.
       if (!Array.isArray(a) && !Array.isArray(b)) return [];
       if (!Array.isArray(a)) return b;
       if (!Array.isArray(b)) return a;
-      if (this.sort && isFunction(this.sort)) {
-        var sortedA = a.slice(0).sort(this.sort);
-        var sortedB = b.slice(0).sort(this.sort);
-        var aLength = sortedA.length;
-        if (!aLength) return sortedB;
-        var bLength = sortedB.length;
-        var aIndex = 0;
-        var bIndex = 0;
-        var added = [];
-        while (bIndex < bLength) {
-          var itemA = sortedA[aIndex];
-          var itemB = sortedB[bIndex];
-          var sorted = this.sort(itemA,itemB);
-          if (sorted > 0) { // b first
-            sortedA.splice(aIndex,0,itemB);
-            aIndex++;
-            aLength++;
-            bIndex++;
-          } else if (sorted < 0) { // a first
-            if (aIndex < aLength - 1) aIndex++;
-            else {
-              aIndex++;
-              aLength++;
-              bIndex++;
-              sortedA.splice(aIndex,0,itemB);
-            }
-          } else { // same
-            if (aIndex < aLength - 1) aIndex++;
-            bIndex++;
-          }
-        }
-        return sortedA;
-      }
       var array = a.slice(0);
       var i = b.length;
       while (i--) {
         if (a.indexOf(b[i]) < 0) array.push(b[i]);
       }
-      if (this.sort === true) array.sort(); // Array.sort default is by unicode codepoint
-      //else if (this.sort && isFunction(this.sort)) array.sort(this.sort);
       return array;
     };
     ShoeSet.prototype.subtract = function(a,b) { // remove b from a
       if (!Array.isArray(a) && !Array.isArray(b)) return [];
       if (!Array.isArray(a)) return b;
       if (!Array.isArray(b)) return a;
-      if (this.sort && isFunction(this.sort)) {
-        var sortedA = a.slice(0).sort(this.sort);
-        var sortedB = b.slice(0).sort(this.sort);
-        var aLength = sortedA.length;
-        var bLength = sortedB.length;
-        if (!aLength) return sortedA;
-        var aIndex = 0;
-        var bIndex = 0;
-        var added = [];
-        while (bIndex < bLength) {
-          var itemA = sortedA[aIndex];
-          var itemB = sortedB[bIndex];
-          var sorted = this.sort(itemA,itemB);
-          if (sorted > 0) { // b first
-            bIndex++;
-          } else if (sorted < 0) { // a first
-            aIndex++;
-            if (aIndex == aLength) break;
-          } else { // same
-            sortedA.splice(aIndex,1);
-            aLength--;
-            bIndex++;
-            if (aIndex == aLength) break;
-          }
-        }
-        return sortedA;
-      }
       var array = a.slice(0);
       var i = b.length;
       while (i--) {
@@ -795,7 +772,8 @@ THE SOFTWARE.
 
     return {
       Layer: ShoeLayer, // The basic layer class, meant to be subclassed
-      ValueType: ShoeValue, // Abstract animation base class
+      Animation: ShoeAnimation, // The basic animation class.
+      ValueType: ShoeValue, // Abstract type base class
       NumberType: ShoeNumber, // For animating numbers
       ScaleType: ShoeScale, // For animating transform scale
       ArrayType: ShoeArray, // For animating arrays of other value types
@@ -815,7 +793,7 @@ THE SOFTWARE.
       registerAnimatableProperty: shoeContext.registerAnimatableProperty.bind(shoeContext),
 
       layerize: shoeContext.layerize.bind(shoeContext),
-      mixin: Mixin, // To mixin layer functionality in objects that are not ShoeLayer subclasses.
+      pyonify: Pyonify, // To mixin layer functionality in objects that are not ShoeLayer subclasses.
     }
   })();
 
