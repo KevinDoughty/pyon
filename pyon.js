@@ -256,7 +256,7 @@ THE SOFTWARE.
       };
 
       var setValueForKey = function(value,property) {
-        // No animation if no change is fine, but I have to prevent react-pyon presentation from calling this.
+        // No animation if no change is fine, but I have to prevent pyon-react presentation from calling this.
         if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal (if you're not careful)
         var animation;
         var transaction = shoeContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
