@@ -39,6 +39,10 @@ THE SOFTWARE.
       window.msCancelAnimationFrame ||
       window.oCancelAnimationFrame;
 
+    function exists(w) {
+      return typeof w !== "undefined" && w !== null;
+    }
+
     function isFunction(w) {
       return w && {}.toString.call(w) === "[object Function]";
     }
@@ -47,7 +51,7 @@ THE SOFTWARE.
       return !isNaN(parseFloat(w)) && isFinite(w); // I want infinity for repeat count. Probably not duration
     }
 
-    function ShoeTransaction(settings,automaticallyCommit) {
+    function PyonTransaction(settings,automaticallyCommit) {
       this.time = performance.now() / 1000; // value should probably be inherited from parent transaction
       this.disableAnimation = false; // value should probably be inherited from parent transaction
       this._automaticallyCommit = automaticallyCommit;
@@ -56,7 +60,7 @@ THE SOFTWARE.
 
 
 
-    function ShoeContext() {
+    function PyonContext() {
       this.targets = [];
       this.transactions = [];
       this.ticking = false;
@@ -120,15 +124,15 @@ THE SOFTWARE.
       };
     }
 
-    ShoeContext.prototype = {
+    PyonContext.prototype = {
       createTransaction: function(settings,automaticallyCommit) {
-        var transaction = new ShoeTransaction(settings,automaticallyCommit);
+        var transaction = new PyonTransaction(settings,automaticallyCommit);
         var length = this.transactions.length;
         if (length) { // Time freezes in transactions. A time getter should return transaction time if within one.
           transaction.time = this.transactions[length-1].time;
         }
         this.transactions.push(transaction);
-        if (automaticallyCommit) this.startTicking(); // Pyon bug fix !!! // Automatic transactions will otherwise not be closed if there is no animation or value set.
+        if (automaticallyCommit) this.startTicking(); // Pyon bug fix // Automatic transactions will otherwise not be closed if there is no animation or value set.
         return transaction;
       },
       currentTransaction: function() {
@@ -206,25 +210,25 @@ THE SOFTWARE.
       }
     }
 
-    ShoeContext.prototype.mixinForModelLayer = function(object) { // Pretend this uses a weak map
+    PyonContext.prototype.mixinForModelLayer = function(object) { // Pretend this uses a weak map
       var index = this.modelLayers.indexOf(object);
       if (index > -1) return this.mixins[index];
     }
 
-    var shoeContext = new ShoeContext();
+    var pyonContext = new PyonContext();
 
-      var animationFromDescription = function(description) {
-        var animation;
-        if (description && description instanceof ShoeAnimation) {
-          animation = description.copy();
-        } else if (description && typeof description === "object") {
-          animation = new ShoeAnimation(description);
-        } else if (isNumber(description)) animation = new ShoeAnimation({duration:description});
-        return animation;
-      };
+    var animationFromDescription = function(description) {
+      var animation;
+      if (description && description instanceof PyonAnimation) {
+        animation = description.copy();
+      } else if (description && typeof description === "object") {
+        animation = new PyonAnimation(description);
+      } else if (isNumber(description)) animation = new PyonAnimation({duration:description});
+      return animation;
+    };
 
-    function Pyonify(receiver,modelInstance,delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
-      var modelDict = {};
+    function Pyonify(receiver, modelInstance, delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
+      var modelDict = {}; // TODO: Unify modelDict, modelInstance, modelLayer.
       var registeredProperties = [];
       var allAnimations = [];
       var namedAnimations = {};
@@ -250,8 +254,8 @@ THE SOFTWARE.
       };
 
       var valueForKey = function(property) {
-        //if (shoeContext.rendering) return receiver.presentationLayer[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
-        if (shoeContext.rendering && cachedPresentationLayer) return cachedPresentationLayer[property];
+        //if (pyonContext.rendering) return receiver.presentationLayer[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
+        if (pyonContext.rendering && cachedPresentationLayer) return cachedPresentationLayer[property];
         return modelDict[property];
       };
 
@@ -259,7 +263,7 @@ THE SOFTWARE.
         // No animation if no change is fine, but I have to prevent pyon-react presentation from calling this.
         if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal (if you're not careful)
         var animation;
-        var transaction = shoeContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
+        var transaction = pyonContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
         if (!transaction.disableAnimation) {
           animation = implicitAnimation(property,value);
           if (animation) {
@@ -278,7 +282,7 @@ THE SOFTWARE.
         if (!animation) receiver.needsDisplay();
       };
       
-      receiver.registerAnimatableProperty = function(property, defaultValue) { // Needed to trigger implicit animation.
+      var registerAnimatableProperty = function(property, defaultValue) { // Needed to trigger implicit animation.
         if (registeredProperties.indexOf(property) === -1) registeredProperties.push(property);
         var descriptor = Object.getOwnPropertyDescriptor(modelInstance, property);
         //if (descriptor && descriptor.configurable === false) { // need automatic registration
@@ -300,10 +304,12 @@ THE SOFTWARE.
               setValueForKey(value,property);
             },
             enumerable: true,
-            configurable: true // temporary, to resolve unterminated
+            configurable: true
           });
         }
       }
+      receiver.registerAnimatableProperty = registerAnimatableProperty;
+      if (delegate) delegate.registerAnimatableProperty = registerAnimatableProperty;
       
       Object.defineProperty(receiver, "animations", {
         get: function() {
@@ -347,11 +353,11 @@ THE SOFTWARE.
         
         Object.keys(compositor).forEach( function(property) {
           var defaultAnimation = defaultAnimations[property];
-          if (defaultAnimation instanceof ShoeAnimation && defaultAnimation.blend === "zero") compositor[property] = defaultAnimation.type.zero(); // deprecate me // blend mode zero has conceptual difficulties. Animations affect layers in ways beyond what an animation should. zero presentation is more of a layer property, not animation. Default animation is the only thing that can be used. Can't do this from animationForKey
+          if (defaultAnimation instanceof PyonAnimation && defaultAnimation.blend === "zero") compositor[property] = defaultAnimation.type.zero(); // deprecate me // blend mode zero has conceptual difficulties. Animations affect layers in ways beyond what an animation should. zero presentation is more of a layer property, not animation. Default animation is the only thing that can be used. Can't do this from animationForKey. Also zero needs an argument
         });
         var finishedAnimations = [];
 
-        Object.defineProperty(presentationLayer, "presentationLayer", { // FIX ME // value should be the presentation layer itself
+        Object.defineProperty(presentationLayer, "presentationLayer", {
           value: presentationLayer,
           enumerable: false,
           configurable: false
@@ -371,8 +377,8 @@ THE SOFTWARE.
         }
         
         var progressChanged = false;
-        if (allAnimations.length) { // Pyon bug fix! Do not create a transaction if there are no animations else the transaction will not be automatically closed.
-          var transaction = shoeContext.currentTransaction();
+        if (allAnimations.length) { // Do not create a transaction if there are no animations else the transaction will not be automatically closed.
+          var transaction = pyonContext.currentTransaction();
           var now = transaction.time;
 
           allAnimations.forEach( function(animation) {
@@ -382,25 +388,28 @@ THE SOFTWARE.
           });
         }
         
-        if (!progressChanged && !finishedAnimations.length) {
+        if (!progressChanged && allAnimations.length && !finishedAnimations.length) {
+        //if (!progressChanged && !finishedAnimations.length) {
           if (!cachedPresentationLayer) cachedPresentationLayer = presentationLayer;
           else return cachedPresentationLayer; // experimental optimization
         }
         
         var compositorKeys = Object.keys(compositor);
-        compositorKeys.forEach( function(property) {
-          //presentationLayer[property] = compositor[property]; // fail, caused unterminated valueForKey when getting presentationLayer
+        compositorKeys.forEach( function(property) { // TODO: Should not defineProperty. Use regular value and freeze object.
+          //presentationLayer[property] = compositor[property]; // FIXME: fail, caused unterminated valueForKey when getting presentationLayer
           Object.defineProperty(presentationLayer, property, {value:compositor[property], enumerable:true}); // pass. Overwrite the setters.
         });
         
-        registeredProperties.forEach( function(property) {
+        /*
+        registeredProperties.forEach( function(property) { // TODO: Registered properties are required to trigger implicit. Registered but undefined properties should not be added to presentationLayer unless there is an animation.
           if (compositorKeys.indexOf(property) === -1) {
             var value = modelDict[property];
             var defaultAnimation = defaultAnimations[property]; // Blend mode zero suffers from conceptual difficulties. don't want to ask for animationForKey again. need to determine presentation value
-            if (defaultAnimation instanceof ShoeAnimation && defaultAnimation.blend === "zero") value = defaultAnimation.type.zero(); // deprecate me
+            if (defaultAnimation instanceof PyonAnimation && defaultAnimation.blend === "zero") value = defaultAnimation.type.zero(); // deprecate me
             presentationLayer[property] = value;
           }
         }.bind(receiver));
+        */
 
         finishedAnimations.forEach( function(animation) {
           if (isFunction(animation.completion)) animation.completion();
@@ -410,18 +419,28 @@ THE SOFTWARE.
         return presentationLayer;
       }
       
-      Object.defineProperty(receiver, "presentationLayer", { // COMPOSITING. Have separate compositor object?
-        get: function() { // need transactions and cache presentation layer
-          return presentationComposite();
+      Object.defineProperty(receiver, "presentationLayer", {
+        get: function() {
+          return presentationComposite(); // COMPOSITING. Have separate compositor object?
         },
         enumerable: false,
         configurable: false
       });
       
+      if (receiver !== delegate) {
+        Object.defineProperty(delegate, "presentationLayer", { // DUPLICATE
+          get: function() {
+            return presentationComposite();
+          },
+          enumerable: false,
+          configurable: false
+        });
+      }
+      
       
       receiver.needsDisplay = function() {
         // This should be used instead of directly calling render
-        shoeContext.registerTarget(receiver);
+        pyonContext.registerTarget(receiver);
       }
       
       var removeAnimationInstance = function(animation) {
@@ -435,12 +454,12 @@ THE SOFTWARE.
       }
 
       receiver.addAnimation = function(animation,name) { // should be able to pass a description if type is registered
-        if (!(animation instanceof ShoeAnimation) && animation !== null && typeof animation === "object") {
+        if (!(animation instanceof PyonAnimation) && animation !== null && typeof animation === "object") {
           animation = animationFromDescription(animation);
         }
         
-        if (typeof animation === "undefined" || animation === null || !animation instanceof ShoeAnimation) throw new Error("Animations must be a Shoe.Animation or subclass.");
-        if (!allAnimations.length) shoeContext.registerTarget(receiver);
+        if (typeof animation === "undefined" || animation === null || !animation instanceof PyonAnimation) throw new Error("Animations must be a Pyon.Animation or subclass.");
+        if (!allAnimations.length) pyonContext.registerTarget(receiver);
         var copy = animation.copy();
         copy.number = animationNumber++;
         allAnimations.push(copy);
@@ -473,19 +492,19 @@ THE SOFTWARE.
 
 
 
-    function ShoeLayer() { // Meant to be subclassed to provide implicit animation and clear distinction between model/presentation values
+    function PyonLayer() { // Meant to be subclassed to provide implicit animation and clear distinction between model/presentation values
       Pyonify(this);
     }
-    ShoeLayer.prototype = {};
-    ShoeLayer.prototype.constructor = ShoeLayer;
-    ShoeLayer.prototype.animationForKey = function(key,value,target) {
+    PyonLayer.prototype = {};
+    PyonLayer.prototype.constructor = PyonLayer;
+    PyonLayer.prototype.animationForKey = function(key,value,target) {
       return null;
     };
 
 
 
     function GraphicsLayer() {
-      // This should more closely resemble CALayer, ShoeLayer just focuses on animations and triggering them
+      // This should more closely resemble CALayer, PyonLayer just focuses on animations and triggering them
       // This should have renderInContext: instead of render:
       // Provide frame and bounds, allow sublayers.
       // apply transforms.
@@ -497,11 +516,11 @@ THE SOFTWARE.
 
 
 
-function ShoeAnimation(settings) { // The base animation type
-      if (this instanceof ShoeAnimation === false) {
+function PyonAnimation(settings) { // The base animation type
+      if (this instanceof PyonAnimation === false) {
         throw new Error("Pyon.Animation is a constructor, not a function. Do not call it directly.");
       }
-      if (this.constructor === ShoeAnimation) {
+      if (this.constructor === PyonAnimation) {
         //throw new Error("Pyon.Animation is an abstract base class.");
       }
       this.settings = settings;
@@ -523,7 +542,7 @@ function ShoeAnimation(settings) { // The base animation type
       this.finished = 0;//false;
       this.startTime; // float
       this.delta;
-      this.type = ShoeNumber;
+      this.type = PyonNumber;
       this.progress = null;
 
       if (settings) Object.keys(settings).forEach( function(key) {
@@ -531,10 +550,11 @@ function ShoeAnimation(settings) { // The base animation type
       }.bind(this));
     }
 
-    ShoeAnimation.prototype = {
-      constructor: ShoeAnimation,
+    PyonAnimation.prototype = {
+      constructor: PyonAnimation,
       composite: function(onto,now) {
-        if (this.startTime === null || this.startTime === undefined) return this.type.zero();
+        //if (this.startTime === null || this.startTime === undefined) return this.type.zero();
+        if (this.startTime === null || this.startTime === undefined) throw new Error("Cannot composite an animation that has not been started.");
         var elapsed = Math.max(0, now - (this.startTime + this.delay));
         var speed = this.speed; // might make speed a property of layer, not animation, might not because no sublayers / layer hierarcy yet. Part of GraphicsLayer.
         var iterationProgress = 1;
@@ -581,7 +601,9 @@ function ShoeAnimation(settings) { // The base animation type
         var property = this.property;
         
         var result = value;
-        if (this.additive) result = this.type.add(onto[property],value);
+        var underlying = onto[property];
+        //if (typeof underlying == "undefined" || underlying === null) underlying = this.type.zero(this.to); // TODO: assess this // FIXME: transform functions? Underlying will never be undefined as it is a registered property, added to modelLayer
+        if (this.additive) result = this.type.add(underlying,value);
 
         if (this.sort && Array.isArray(result)) result.sort(this.sort);
         onto[property] = result;
@@ -607,7 +629,7 @@ function ShoeAnimation(settings) { // The base animation type
             if (isFunction(this.onend)) this.onend();
             this.completion = null; // lazy way to keep compositor from calling this twice, during fill phase
           }.bind(this);
-          if (this.startTime === null || this.startTime === undefined) this.startTime = shoeContext.currentTransaction().time;
+          if (this.startTime === null || this.startTime === undefined) this.startTime = pyonContext.currentTransaction().time;
         } else {
           throw new Error("Pyon.Animation runAnimation invalid type. Must implement zero, add, subtract, and interpolate.");
         }
@@ -628,16 +650,16 @@ function ShoeAnimation(settings) { // The base animation type
 
 
 
-    function ShoeValue(settings) { // The base animation type
-      if (this instanceof ShoeValue === false) {
+    function PyonValue(settings) { // The base animation type
+      if (this instanceof PyonValue === false) {
         throw new Error("Pyon.ValueType is a constructor, not a function. Do not call it directly.");
       }
-      if (this.constructor === ShoeValue) {
+      if (this.constructor === PyonValue) {
         throw new Error("Pyon.ValueType is an abstract base class.");
       }
     }
     
-    ShoeValue.prototype = {
+    PyonValue.prototype = {
       zero: function() {
         throw new Error("Pyon.ValueType subclasses must implement function: zero()");
       },
@@ -654,76 +676,76 @@ function ShoeAnimation(settings) { // The base animation type
 
 
 
-    function ShoeNumber(settings) {
-      ShoeValue.call(this,settings);
+    function PyonNumber(settings) {
+      PyonValue.call(this,settings);
     }
-    ShoeNumber.prototype = Object.create(ShoeValue.prototype);
-    ShoeNumber.prototype.constructor = ShoeNumber;
-    ShoeNumber.prototype.zero = function() {
+    PyonNumber.prototype = Object.create(PyonValue.prototype);
+    PyonNumber.prototype.constructor = PyonNumber;
+    PyonNumber.prototype.zero = function() {
       return 0;
     };
-    ShoeNumber.prototype.add = function(a,b) {
+    PyonNumber.prototype.add = function(a,b) {
       return a + b;
     };
-    ShoeNumber.prototype.subtract = function(a,b) { // subtract b from a
+    PyonNumber.prototype.subtract = function(a,b) { // subtract b from a
       return a - b;
     };
-    ShoeNumber.prototype.interpolate = function(a,b,progress) {
+    PyonNumber.prototype.interpolate = function(a,b,progress) {
       return a + (b-a) * progress;
     };
 
 
 
-    function ShoeScale(settings) {
-      ShoeValue.call(this,settings);
+    function PyonScale(settings) {
+      PyonValue.call(this,settings);
     }
-    ShoeScale.prototype = Object.create(ShoeValue.prototype);
-    ShoeScale.prototype.constructor = ShoeScale;
-    ShoeScale.prototype.zero = function() {
+    PyonScale.prototype = Object.create(PyonValue.prototype);
+    PyonScale.prototype.constructor = PyonScale;
+    PyonScale.prototype.zero = function() {
       return 1;
     };
-    ShoeScale.prototype.add = function(a,b) {
+    PyonScale.prototype.add = function(a,b) {
       return a * b;
     };
-    ShoeScale.prototype.subtract = function(a,b) { // subtract b from a
+    PyonScale.prototype.subtract = function(a,b) { // subtract b from a
       if (b === 0) return 0;
       return a/b;
     };
-    ShoeScale.prototype.interpolate = function(a,b,progress) {
+    PyonScale.prototype.interpolate = function(a,b,progress) {
       return a + (b-a) * progress;
     };
 
 
 
-    function ShoeArray(type,length,settings) {
-      Shoe.ValueType.call(this,settings);
+    function PyonArray(type,length,settings) {
+      Pyon.ValueType.call(this,settings);
       this.type = type;
       if (isFunction(type)) this.type = new type(settings);
       this.length = length;
     }
-    ShoeArray.prototype = Object.create(ShoeValue.prototype);
-    ShoeArray.prototype.constructor = ShoeArray;
-    ShoeArray.prototype.zero = function() {
+    PyonArray.prototype = Object.create(PyonValue.prototype);
+    PyonArray.prototype.constructor = PyonArray;
+    PyonArray.prototype.zero = function() {
       var array = [];
       var i = this.length;
       while (i--) array.push(this.type.zero());
       return array;
     };
-    ShoeArray.prototype.add = function(a,b) {
+    PyonArray.prototype.add = function(a,b) {
       var array = [];
       for (var i = 0; i < this.length; i++) {
         array.push(this.type.add(a[i],b[i]));
       }
       return array;
     };
-    ShoeArray.prototype.subtract = function(a,b) { // subtract b from a
+    PyonArray.prototype.subtract = function(a,b) { // subtract b from a
       var array = [];
       for (var i = 0; i < this.length; i++) {
         array.push(this.type.subtract(a[i],b[i]));
       }
       return array;
     };
-    ShoeArray.prototype.interpolate = function(a,b,progress) {
+    PyonArray.prototype.interpolate = function(a,b,progress) {
       var array = [];
       for (var i = 0; i < this.length; i++) {
         array.push(this.type.interpolate(a[i],b[i],progress));
@@ -733,15 +755,15 @@ function ShoeAnimation(settings) { // The base animation type
 
 
 
-    function ShoeSet(settings) {
-      ShoeValue.call(this,settings);
+    function PyonSet(settings) {
+      PyonValue.call(this,settings);
     }
-    ShoeSet.prototype = Object.create(ShoeValue.prototype);
-    ShoeSet.prototype.constructor = ShoeSet;
-    ShoeSet.prototype.zero = function() {
+    PyonSet.prototype = Object.create(PyonValue.prototype);
+    PyonSet.prototype.constructor = PyonSet;
+    PyonSet.prototype.zero = function() {
       return [];
     };
-    ShoeSet.prototype.add = function(a,b) {
+    PyonSet.prototype.add = function(a,b) {
       if (!Array.isArray(a) && !Array.isArray(b)) return [];
       if (!Array.isArray(a)) return b;
       if (!Array.isArray(b)) return a;
@@ -752,7 +774,7 @@ function ShoeAnimation(settings) { // The base animation type
       }
       return array;
     };
-    ShoeSet.prototype.subtract = function(a,b) { // remove b from a
+    PyonSet.prototype.subtract = function(a,b) { // remove b from a
       if (!Array.isArray(a) && !Array.isArray(b)) return [];
       if (!Array.isArray(a)) return b;
       if (!Array.isArray(b)) return a;
@@ -764,36 +786,89 @@ function ShoeAnimation(settings) { // The base animation type
       }
       return array;
     };
-    ShoeSet.prototype.interpolate = function(a,b,progress) {
+    PyonSet.prototype.interpolate = function(a,b,progress) {
+      if (progress >= 1) return b;
+      return a;
+    };
+
+
+    function PyonDict(settings) {
+      PyonValue.call(this,settings);
+    }
+    PyonDict.prototype = Object.create(PyonValue.prototype);
+    PyonDict.prototype.constructor = PyonDict;
+    PyonDict.prototype.zero = function() {
+      return {};
+    };
+    PyonDict.prototype.add = function(a,b) {
+      if (!exists(a) && !exists(b)) return {};
+      if (!exists(a)) return b;
+      if (!exists(b)) return a;
+      var A = Object.keys(a);
+      var B = Object.keys(b);
+      var dict = {};
+      var i = A.length;
+      while (i--) {
+        var key = A[i];
+        dict[key] = a[key];
+      }
+      var j = B.length;
+      while (j--) {
+        var key = B[j];
+        if (A.indexOf(key) < 0) dict.push(b[key]);
+      }
+      return dict;
+    };
+    PyonDict.prototype.subtract = function(a,b) { // remove b from a
+      if (!exists(a) && !exists(b)) return {};
+      if (!exists(a)) return b;
+      if (!exists(b)) return a;
+      var A = Object.keys(a);
+      var B = Object.keys(b);
+      var dict = {};
+      var i = A.length;
+      while (i--) {
+        var key = A[i];
+        dict[key] = a[key];
+      }
+      var j = B.length;
+      while (j--) {
+        var key = B[j];
+        delete dict[key];
+      }
+      return dict;
+    };
+    PyonDict.prototype.interpolate = function(a,b,progress) {
       if (progress >= 1) return b;
       return a;
     };
 
 
     return {
-      Layer: ShoeLayer, // The basic layer class, meant to be subclassed
-      Animation: ShoeAnimation, // The basic animation class.
-      ValueType: ShoeValue, // Abstract type base class
-      NumberType: ShoeNumber, // For animating numbers
-      ScaleType: ShoeScale, // For animating transform scale
-      ArrayType: ShoeArray, // For animating arrays of other value types
-      SetType: ShoeSet, // Discrete object collection changes
-      beginTransaction: shoeContext.beginTransaction.bind(shoeContext),
-      commitTransaction: shoeContext.commitTransaction.bind(shoeContext),
-      flushTransaction: shoeContext.flushTransaction.bind(shoeContext),
-      currentTransaction: shoeContext.currentTransaction.bind(shoeContext),
-      disableAnimation: shoeContext.disableAnimation.bind(shoeContext),
+      Layer: PyonLayer, // The basic layer class, meant to be subclassed
+      Animation: PyonAnimation, // The basic animation class.
+      ValueType: PyonValue, // Abstract type base class
+      NumberType: PyonNumber, // For animating numbers
+      ScaleType: PyonScale, // For animating transform scale
+      ArrayType: PyonArray, // For animating arrays of other value types
+      SetType: PyonSet, // Discrete object collection changes
+      DictType: PyonDict, // Discrete key changes
+      beginTransaction: pyonContext.beginTransaction.bind(pyonContext),
+      commitTransaction: pyonContext.commitTransaction.bind(pyonContext),
+      flushTransaction: pyonContext.flushTransaction.bind(pyonContext),
+      currentTransaction: pyonContext.currentTransaction.bind(pyonContext),
+      disableAnimation: pyonContext.disableAnimation.bind(pyonContext),
 
-      addAnimation: shoeContext.addAnimation.bind(shoeContext),
-      removeAnimation: shoeContext.removeAnimation.bind(shoeContext),
-      removeAllAnimations: shoeContext.removeAllAnimations.bind(shoeContext),
-      animationNamed: shoeContext.animationNamed.bind(shoeContext),
-      animationKeys: shoeContext.animationKeys.bind(shoeContext),
-      presentationLayer: shoeContext.presentationLayer.bind(shoeContext),
-      registerAnimatableProperty: shoeContext.registerAnimatableProperty.bind(shoeContext),
+      addAnimation: pyonContext.addAnimation.bind(pyonContext),
+      removeAnimation: pyonContext.removeAnimation.bind(pyonContext),
+      removeAllAnimations: pyonContext.removeAllAnimations.bind(pyonContext),
+      animationNamed: pyonContext.animationNamed.bind(pyonContext),
+      animationKeys: pyonContext.animationKeys.bind(pyonContext),
+      presentationLayer: pyonContext.presentationLayer.bind(pyonContext),
+      registerAnimatableProperty: pyonContext.registerAnimatableProperty.bind(pyonContext),
 
-      layerize: shoeContext.layerize.bind(shoeContext),
-      pyonify: Pyonify, // To mixin layer functionality in objects that are not ShoeLayer subclasses.
+      layerize: pyonContext.layerize.bind(pyonContext),
+      pyonify: Pyonify, // To mixin layer functionality in objects that are not PyonLayer subclasses.
     }
   })();
 
@@ -802,7 +877,7 @@ function ShoeAnimation(settings) { // The base animation type
     root.Pyon = previousPyon;
     return Pyon;
   }
-  if (typeof exports !== "undefined") { // http://www.richardrodger.com/2013/09/27/how-to-make-simple-node-js-modules-work-in-the-browser/#.VpuIsTZh2Rs
+  if (typeof exports !== "undefined") { // http://www.richardrodger.com/2013/09/27/how-to-make-simple-node-js-modules-work-in-the-browser/
     if (typeof module !== "undefined" && module.exports) exports = module.exports = Pyon;
     exports.Pyon = Pyon;
   } else root.Pyon = Pyon;
