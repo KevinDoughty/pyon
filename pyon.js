@@ -183,8 +183,7 @@ THE SOFTWARE.
         while (i--) {
           var target = targets[i];
           if (!target.animations.length) { // Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading.
-            console.log("Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading");
-            this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed. Different and unneeded behavior than removalCallback & removeAnimationInstance
+            this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed. Different and (should be) unneeded behavior than removalCallback & removeAnimationInstance
           }
           var render = target.delegate.render;
           if (!isFunction(render)) render = target.render;
