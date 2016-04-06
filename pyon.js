@@ -140,7 +140,7 @@ THE SOFTWARE.
         if (length) return this.transactions[length-1];
         return this.createTransaction({},true);
       },
-      beginTransaction: function(settings) {
+      beginTransaction: function(settings) { // TODO: throw on unclosed (user created) transaction
         this.createTransaction(settings,false);
       },
       commitTransaction: function() {
@@ -182,20 +182,20 @@ THE SOFTWARE.
         
         while (i--) {
           var target = targets[i];
-          if (!target.animations.length) this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed
-          
+          if (!target.animations.length) { // Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading.
+            console.log("Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading");
+            this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed. Different and unneeded behavior than removalCallback & removeAnimationInstance
+          }
           var render = target.delegate.render;
           if (!isFunction(render)) render = target.render;
           if (isFunction(render)) {
             this.rendering = true;
             var presentationLayer = target.presentationLayer;
-            if (this.renderLayers[i] !== presentationLayer) { // This is a poor way to suppress unnecessary renders
-              this.renderLayers[i] = presentationLayer; // cachedPresentationLayer
+            if (this.renderLayers[i] !== presentationLayer) { // This is to suppress unnecessary renders. // React gets one immediate render then a tick. Optimize here and in presentationComposite
+              if (target.animations.length) this.renderLayers[i] = presentationLayer; // cachedPresentationLayer
               var boundRender = render.bind(presentationLayer);
-              //boundRender(presentationLayer,target.modelLayer);
               boundRender();
             }
-            //render();
             this.rendering = false;
           }
         }
@@ -350,7 +350,6 @@ THE SOFTWARE.
         //var presentationLayer = {}; // This does not work because an implementation's render function would otherwise not get non-animated properties like this.element
         var presentationLayer = Object.create(modelInstance); // Until we have ES6 Proxy, have to use Object.create. // You need this so render has non animated properties like this.element // modelInstance becomes prototype
         var compositor = Object.keys(modelDict).reduce(function(a, b) { a[b] = modelDict[b]; return a;}, {});
-        
         Object.keys(compositor).forEach( function(property) {
           var defaultAnimation = defaultAnimations[property];
           if (defaultAnimation instanceof PyonAnimation && defaultAnimation.blend === "zero") compositor[property] = defaultAnimation.type.zero(); // deprecate me // blend mode zero has conceptual difficulties. Animations affect layers in ways beyond what an animation should. zero presentation is more of a layer property, not animation. Default animation is the only thing that can be used. Can't do this from animationForKey. Also zero needs an argument
@@ -380,7 +379,6 @@ THE SOFTWARE.
         if (allAnimations.length) { // Do not create a transaction if there are no animations else the transaction will not be automatically closed.
           var transaction = pyonContext.currentTransaction();
           var now = transaction.time;
-
           allAnimations.forEach( function(animation) {
             progressChanged = animation.composite(compositor,now) || progressChanged;
             if (animation.finished > 1) throw new Error("Animation finishing twice is not possible");
@@ -389,11 +387,10 @@ THE SOFTWARE.
         }
         
         if (!progressChanged && allAnimations.length && !finishedAnimations.length) {
-        //if (!progressChanged && !finishedAnimations.length) {
           if (!cachedPresentationLayer) cachedPresentationLayer = presentationLayer;
-          else return cachedPresentationLayer; // experimental optimization
+          else return cachedPresentationLayer; // Suppress unnecessary renders. // React still gets one immediate render then a tick. Optimize here and in presentationComposite
         }
-        
+
         var compositorKeys = Object.keys(compositor);
         compositorKeys.forEach( function(property) { // TODO: Should not defineProperty. Use regular value and freeze object.
           //presentationLayer[property] = compositor[property]; // FIXME: fail, caused unterminated valueForKey when getting presentationLayer
@@ -445,7 +442,14 @@ THE SOFTWARE.
       
       var removeAnimationInstance = function(animation) {
         var index = allAnimations.indexOf(animation);
-        if (index > -1) allAnimations.splice(index,1); // do not deregister yet, must ensure one more tick
+        if (index > -1) allAnimations.splice(index,1);
+        var ensureOneMoreTick = false; // true = do not deregister yet, to ensure one more tick, but it is no longer needed. Redundant code in ticker to remove should not get called (but don't remove it just yet)
+        if (!ensureOneMoreTick) {
+          if (!allAnimations.length) {
+            //console.log("finishedAnimation:%s;",animation.property);
+            pyonContext.deregisterTarget(receiver);
+          }
+        }
       }
 
       var removalCallback = function(animation,key) {
@@ -553,8 +557,7 @@ function PyonAnimation(settings) { // The base animation type
     PyonAnimation.prototype = {
       constructor: PyonAnimation,
       composite: function(onto,now) {
-        //if (this.startTime === null || this.startTime === undefined) return this.type.zero();
-        if (this.startTime === null || this.startTime === undefined) throw new Error("Cannot composite an animation that has not been started.");
+        if (this.startTime === null || this.startTime === undefined) throw new Error("Cannot composite an animation that has not been started."); // return this.type.zero();
         var elapsed = Math.max(0, now - (this.startTime + this.delay));
         var speed = this.speed; // might make speed a property of layer, not animation, might not because no sublayers / layer hierarcy yet. Part of GraphicsLayer.
         var iterationProgress = 1;
@@ -582,6 +585,7 @@ function PyonAnimation(settings) { // The base animation type
         else { 
           // TODO: match web-animations syntax
           // TODO: refine regex, perform once in runAnimation 
+         // FIXME: step-end renders twice (actually thrice). Should I just render once, not at the start?
          
           var rounded = 0.5-(Math.cos(iterationProgress * Math.PI) / 2);
           if (this.easing) {
@@ -872,7 +876,7 @@ function PyonAnimation(settings) { // The base animation type
     }
   })();
 
-  
+
   Pyon.noConflict = function() {
     root.Pyon = previousPyon;
     return Pyon;
