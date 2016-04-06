@@ -1,6 +1,6 @@
 {
   "name": "pyon",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Animation layers for javascript (a work in progress)",
   "main": "pyon.js",
   "scripts": {
