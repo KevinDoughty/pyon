@@ -25,19 +25,25 @@ THE SOFTWARE.
   var root = this;
   var previousPyon = root.Pyon;
   var Pyon = root.Pyon = (function() {
+    
+    // TODO: Handle no window and no performance.now
+    
+    var rAF = typeof window !== "undefined" && (
+        window.requestAnimationFrame ||
+        window.webkitRequestAnimationFrame ||
+        window.mozRequestAnimationFrame ||
+        window.msRequestAnimationFrame ||
+        window.oRequestAnimationFrame
+      ) || function(callback) { setTimeout(callback, 0) };
 
-    var rAF = window.requestAnimationFrame ||
-      window.webkitRequestAnimationFrame ||
-      window.mozRequestAnimationFrame ||
-      window.msRequestAnimationFrame ||
-      window.oRequestAnimationFrame;
-
-    var cAF = window.cancelAnimationFrame ||
-      window.webkitCancelRequestAnimationFrame ||
-      window.webkitCancelAnimationFrame ||
-      window.mozCancelAnimationFrame ||
-      window.msCancelAnimationFrame ||
-      window.oCancelAnimationFrame;
+    var cAF = typeof window !== "undefined" && (
+        window.cancelAnimationFrame ||
+        window.webkitCancelRequestAnimationFrame ||
+        window.webkitCancelAnimationFrame ||
+        window.mozCancelAnimationFrame ||
+        window.msCancelAnimationFrame ||
+        window.oCancelAnimationFrame
+      ) || function() {}; // TODO: cAF only used in flush() which is not supported yet
 
     function exists(w) {
       return typeof w !== "undefined" && w !== null;
@@ -65,13 +71,12 @@ THE SOFTWARE.
       this.transactions = [];
       this.ticking = false;
       this.rendering = false;
-      this.frame;
+      this.animationFrame;
 
       this.mixins = [];
       this.modelLayers = []; // model layers // TODO: Cache presentation layers so you don't have to repeatedly calculate?
       this.renderLayers = []; // cachedPresentationLayer
-      this.unlayerize = function(modelLayer) {
-      };
+      this.unlayerize = function(modelLayer) {}; // TODO: implement. Or not.
       this.layerize = function(modelLayer,delegate) {
         var mixin = this.mixinForModelLayer(modelLayer);
         if (!mixin) {
@@ -147,7 +152,7 @@ THE SOFTWARE.
         var transaction = this.transactions.pop();
       },
       flushTransaction: function() { // TODO: prevent unterminated when called within render
-        if (this.frame) cAF(this.frame); // Unsure if cancelling animation frame is needed.
+        if (this.animationFrame) cAF(this.animationFrame); // Unsure if cancelling animation frame is needed.
         this.ticker(); // Probably should not commit existing transaction
       },
       disableAnimation: function(disable) {
@@ -173,16 +178,17 @@ THE SOFTWARE.
         }
       },
       startTicking: function() {
-        if (!this.frame) this.frame = rAF(this.ticker.bind(this));
+        if (!this.animationFrame) this.animationFrame = rAF(this.ticker.bind(this));
       },
       ticker: function() { // Need to manually cancel animation frame if calling directly.
-        this.frame = undefined;
+        this.animationFrame = undefined;
         var targets = this.targets; // experimental optimization, traverse backwards so you can remove. This has caused problems for me before, but I don't think I was traversing backwards.
         var i = targets.length;
         
         while (i--) {
           var target = targets[i];
           if (!target.animations.length) { // Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading.
+            //console.log("Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading or when animation fails");
             this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed. Different and (should be) unneeded behavior than removalCallback & removeAnimationInstance
           }
           var render = target.delegate.render;
@@ -227,7 +233,7 @@ THE SOFTWARE.
     };
 
     function Pyonify(receiver, modelInstance, delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
-      var modelDict = {}; // TODO: Unify modelDict, modelInstance, modelLayer.
+      var modelDict = {}; // TODO: Unify modelDict, modelInstance, modelLayer. This is convoluted. Looking forward to having proxy
       var registeredProperties = [];
       var allAnimations = [];
       var namedAnimations = {};
@@ -243,6 +249,8 @@ THE SOFTWARE.
 
       if (delegate === null || delegate === undefined) delegate = modelInstance;
       receiver.delegate = delegate;
+
+      var previousLayer = {}; // TODO: need better rules for resetting values to become current. Doing when layer is asked for doesn't work if PyonReact privately uses it.
 
       var implicitAnimation = function(property,value) {
         var description;
@@ -261,6 +269,7 @@ THE SOFTWARE.
       var setValueForKey = function(value,property) {
         // No animation if no change is fine, but I have to prevent pyon-react presentation from calling this.
         if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal (if you're not careful)
+        previousLayer[property] = valueForKey(property); // for previousLayer.
         var animation;
         var transaction = pyonContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
         if (!transaction.disableAnimation) {
@@ -277,10 +286,9 @@ THE SOFTWARE.
         }
         modelDict[property] = value;
         cachedPresentationLayer = null;
-
         if (!animation) receiver.needsDisplay();
       };
-      
+
       var registerAnimatableProperty = function(property, defaultValue) { // Needed to trigger implicit animation.
         if (registeredProperties.indexOf(property) === -1) registeredProperties.push(property);
         var descriptor = Object.getOwnPropertyDescriptor(modelInstance, property);
@@ -309,7 +317,7 @@ THE SOFTWARE.
       }
       receiver.registerAnimatableProperty = registerAnimatableProperty;
       if (delegate) delegate.registerAnimatableProperty = registerAnimatableProperty;
-      
+
       Object.defineProperty(receiver, "animations", {
         get: function() {
           return allAnimations.map(function (animation) {
@@ -319,7 +327,7 @@ THE SOFTWARE.
         enumerable: false,
         configurable: false
       });
-      
+
       Object.defineProperty(receiver, "animationNames", {
         get: function() {
           return Object.keys(namedAnimations);
@@ -327,40 +335,50 @@ THE SOFTWARE.
         enumerable: false,
         configurable: false
       });
-      
+
       Object.defineProperty(receiver, "modelLayer", {
         get: function() {
-          var modelLayer = Object.create(modelInstance); // modelInstance has defined properties. Must redefine.
-          registeredProperties.forEach( function(item,index) {
-            Object.defineProperty(modelLayer, item, {
-              value: modelDict[item],
+          var layer = Object.create(modelInstance);
+          registeredProperties.forEach( function(key) {
+            Object.defineProperty(layer, key, { // modelInstance has defined properties. Must redefine.
+              value: modelDict[key],
               enumerable: true,
               configurable: false
             });
-          }.bind(this));
-          return modelLayer;
+          });
+          Object.freeze(layer);
+          return layer;
         },
         enumerable: true,
         configurable: false
       });
-      
-      var debugAccessCount = 0;
-      var presentationComposite = function() { // TODO: optimize me // return modelLayer if there are no animations
-        //var presentationLayer = {}; // This does not work because an implementation's render function would otherwise not get non-animated properties like this.element
-        var presentationLayer = Object.create(modelInstance); // Until we have ES6 Proxy, have to use Object.create. // You need this so render has non animated properties like this.element // modelInstance becomes prototype
-        var compositor = Object.keys(modelDict).reduce(function(a, b) { a[b] = modelDict[b]; return a;}, {});
-        Object.keys(compositor).forEach( function(property) {
-          var defaultAnimation = defaultAnimations[property];
-          if (defaultAnimation instanceof PyonAnimation && defaultAnimation.blend === "zero") compositor[property] = defaultAnimation.type.zero(); // deprecate me // blend mode zero has conceptual difficulties. Animations affect layers in ways beyond what an animation should. zero presentation is more of a layer property, not animation. Default animation is the only thing that can be used. Can't do this from animationForKey. Also zero needs an argument
-        });
-        var finishedAnimations = [];
 
-        Object.defineProperty(presentationLayer, "presentationLayer", {
+      Object.defineProperty(receiver, "previousLayer", {
+        get: function() {
+          var layer = Object.assign({},modelInstance,modelDict);
+          Object.keys(previousLayer).forEach( function(key) {
+            Object.defineProperty(layer, key, {
+              value: previousLayer[key],
+              enumerable: true,
+              configurable: false
+            });
+            previousLayer[key] = modelDict[key];
+          });
+          Object.freeze(layer);
+          return layer;
+        },
+        enumerable: true,
+        configurable: false
+      });
+
+      var presentationComposite = function() { // New version but does not properly assign or return cachedPresentationLayer to suppress unnecessary renders if not animating. Less important than when animating.
+        var presentationLayer = Object.assign({},modelInstance,modelDict); // You need to make sure render has non animated properties for example this.element
+        if (!allAnimations.length) return presentationLayer;
+        Object.defineProperty(presentationLayer, "presentationLayer", { // Differences with CA, layer does not actually have modelLayer and presentationLayer accessors, the receiver does, which is not necessarily a layer. You may not want to do this.
           value: presentationLayer,
           enumerable: false,
           configurable: false
         });
-
         if (shouldSortAnimations) {
           allAnimations.sort( function(a,b) {
             var A = a.index, B = b.index;
@@ -373,48 +391,28 @@ THE SOFTWARE.
           });
           shouldSortAnimations = false;
         }
-        
+        var finishedAnimations = [];
         var progressChanged = false;
         if (allAnimations.length) { // Do not create a transaction if there are no animations else the transaction will not be automatically closed.
           var transaction = pyonContext.currentTransaction();
           var now = transaction.time;
           allAnimations.forEach( function(animation) {
-            progressChanged = animation.composite(compositor,now) || progressChanged;
+            progressChanged = animation.composite(presentationLayer,now) || progressChanged;
             if (animation.finished > 1) throw new Error("Animation finishing twice is not possible");
             if (animation.finished > 0) finishedAnimations.push(animation);
           });
         }
-        
         if (!progressChanged && allAnimations.length && !finishedAnimations.length) {
           if (!cachedPresentationLayer) cachedPresentationLayer = presentationLayer;
-          else return cachedPresentationLayer; // Suppress unnecessary renders. // React still gets one immediate render then a tick. Optimize here and in presentationComposite
+          else return cachedPresentationLayer; // Suppress unnecessary renders. // React still gets one immediate render then a tick.
         }
-
-        var compositorKeys = Object.keys(compositor);
-        compositorKeys.forEach( function(property) { // TODO: Should not defineProperty. Use regular value and freeze object.
-          //presentationLayer[property] = compositor[property]; // FIXME: fail, caused unterminated valueForKey when getting presentationLayer
-          Object.defineProperty(presentationLayer, property, {value:compositor[property], enumerable:true}); // pass. Overwrite the setters.
-        });
-        
-        /*
-        registeredProperties.forEach( function(property) { // TODO: Registered properties are required to trigger implicit. Registered but undefined properties should not be added to presentationLayer unless there is an animation.
-          if (compositorKeys.indexOf(property) === -1) {
-            var value = modelDict[property];
-            var defaultAnimation = defaultAnimations[property]; // Blend mode zero suffers from conceptual difficulties. don't want to ask for animationForKey again. need to determine presentation value
-            if (defaultAnimation instanceof PyonAnimation && defaultAnimation.blend === "zero") value = defaultAnimation.type.zero(); // deprecate me
-            presentationLayer[property] = value;
-          }
-        }.bind(receiver));
-        */
-
         finishedAnimations.forEach( function(animation) {
           if (isFunction(animation.completion)) animation.completion();
         });
         cachedPresentationLayer = presentationLayer;
-        
         return presentationLayer;
       }
-      
+
       Object.defineProperty(receiver, "presentationLayer", {
         get: function() {
           return presentationComposite(); // COMPOSITING. Have separate compositor object?
@@ -422,7 +420,6 @@ THE SOFTWARE.
         enumerable: false,
         configurable: false
       });
-      
       if (receiver !== delegate) {
         Object.defineProperty(delegate, "presentationLayer", { // DUPLICATE
           get: function() {
@@ -432,13 +429,12 @@ THE SOFTWARE.
           configurable: false
         });
       }
-      
-      
+
       receiver.needsDisplay = function() {
         // This should be used instead of directly calling render
         pyonContext.registerTarget(receiver);
       }
-      
+
       var removeAnimationInstance = function(animation) {
         var index = allAnimations.indexOf(animation);
         if (index > -1) allAnimations.splice(index,1);
@@ -460,13 +456,12 @@ THE SOFTWARE.
         if (!(animation instanceof PyonAnimation) && animation !== null && typeof animation === "object") {
           animation = animationFromDescription(animation);
         }
-        
         if (typeof animation === "undefined" || animation === null || !animation instanceof PyonAnimation) throw new Error("Animations must be a Pyon.Animation or subclass.");
         if (!allAnimations.length) pyonContext.registerTarget(receiver);
         var copy = animation.copy();
         copy.number = animationNumber++;
         allAnimations.push(copy);
-        if (name !== null && name !== undefined) {
+        if (name !== null && typeof name !== "undefined") {
           var previous = namedAnimations[name];
           if (previous) removeAnimationInstance(previous); // after pushing to allAnimations, so context doesn't stop ticking
           namedAnimations[name] = copy;
@@ -846,7 +841,7 @@ function PyonAnimation(settings) { // The base animation type
       return a;
     };
 
-
+    //var noop = typeof window === "undefined"; // TODO: figure out server side behavior. Not all functions can be noop. For now prevent in pyon-react, but I do expect there to be uses in React for creating transactions.
     return {
       Layer: PyonLayer, // The basic layer class, meant to be subclassed
       Animation: PyonAnimation, // The basic animation class.
