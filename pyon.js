@@ -59,6 +59,51 @@ THE SOFTWARE.
       return !isNaN(parseFloat(w)) && isFinite(w); // I want infinity for repeat count. Probably not duration
     }
 
+
+
+    function springDurationSolver(spring,settledThreshold,timeThreshold) {
+      var sThreshold = settledThreshold || 0.0001;
+      var tThreshold = timeThreshold || 0.0001;
+
+      var tLeft;
+      var tRight = 0.0;
+      var T = 1.0;
+      var sRight = spring.solve(0.0);
+      var sLeft;
+
+      do { // First pass increases duration until the spring has settled.
+        sLeft = sRight;
+        tLeft = tRight;
+        tRight += T;
+        T *= 2;
+        sRight = spring.solve(tRight);
+      } while (Math.abs(sRight-sLeft) >= sThreshold); // When sDelta is below sThreshold, the longest possible duration is tLeft.
+
+      tRight = tLeft; // Reassign left & right values for next pass. Longest possible duration is now tRight.
+      sRight = sLeft;
+      sLeft = spring.solve(0.0);
+      tLeft = 0.0;
+      var bailout = false; // mass, stiffness, or damping of zero
+
+      do { // Second pass keeps shortening the duration to remove parts where it has settled.
+        var tMiddle = tLeft + (tRight-tLeft) / 2.0;
+        var sMiddle = spring.solve(tMiddle);
+        if (Math.abs(sRight-sMiddle) < sThreshold) {
+          bailout = (sRight == sMiddle || tRight == tMiddle);
+          sRight = sMiddle;
+          tRight = tMiddle;
+        } else {
+          bailout = (sLeft == sMiddle || tLeft == tMiddle);
+          sLeft = sMiddle;
+          tLeft = tMiddle;
+        }
+      } while (Math.abs(sRight-sLeft) >= sThreshold && tRight-tLeft >= tThreshold && !bailout);
+
+      return tRight;
+    }
+
+
+
     function PyonTransaction(settings,automaticallyCommit) {
       this.time = performance.now() / 1000; // value should probably be inherited from parent transaction
       this.disableAnimation = false; // value should probably be inherited from parent transaction
@@ -83,7 +128,8 @@ THE SOFTWARE.
         var mixin = this.mixinForModelLayer(modelLayer);
         if (!mixin) {
           mixin = {};
-          Pyonify(mixin,modelLayer,delegate);
+          if (!delegate) delegate = modelLayer;
+          pyonify(mixin,modelLayer,delegate);
           this.mixins.push(mixin);
           this.modelLayers.push(modelLayer);
         } else {
@@ -96,7 +142,7 @@ THE SOFTWARE.
         var mixin = this.mixinForModelLayer(modelLayer);
         if (!mixin) { // maybe require layerize() rather than lazy create
           mixin = {};
-          Pyonify(mixin,modelLayer);
+          pyonify(mixin,modelLayer);
           this.mixins.push(mixin);
           this.modelLayers.push(modelLayer);
         }
@@ -305,8 +351,8 @@ THE SOFTWARE.
 
 
 
-    function Pyonify(receiver, modelInstance, delegateInstance) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
-      if (receiver.pyonified) throw new Error("Can't Pyonify twice.");
+    function pyonify(receiver, modelInstance, delegateInstance) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
+      if (receiver.pyonified) throw new Error("Can't pyonify twice.");
       receiver.pyonified = true;
       var modelDict = {}; // TODO: Unify modelDict, modelInstance, modelLayer. This is convoluted. Looking forward to having proxy
       var registeredProperties = [];
@@ -328,7 +374,7 @@ THE SOFTWARE.
         get: function() {
           return modelInstance;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       }
       if (receiver != modelInstance) layerDescription["set"] = function(layer) { // TODO: consider react like union instead of set
@@ -337,14 +383,14 @@ THE SOFTWARE.
           controllerInstance.registerAnimatableProperty(key);
         });
       }
-      Object.defineProperty(receiver, "layer", layerDescription);
+      Object.defineProperty(receiver, "layer", layerDescription); // TODO: resolve layer vs. modelLayer
 
 
       var delegateDescription = { // conditional with new handling of arguments
         get: function() {
           return delegateInstance;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       }
       if (receiver != delegateInstance) delegateDescription["set"] = function(theDelegate) {
@@ -357,7 +403,7 @@ THE SOFTWARE.
         get: function() {
           return controllerInstance;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       }
       var controllerSetter = function(theController) {
@@ -385,8 +431,9 @@ THE SOFTWARE.
         return animation;
       };
 
-      var valueForKey = function(property) {
-        if (pyonContext.displaying && cachedPresentationLayer) return cachedPresentationLayer[property];
+      var valueForKey = function(property) { // only called for registered properties, don't need modelInstance.
+        if (pyonContext.displaying && cachedPresentationLayer) return cachedPresentationLayer[property]; // Doing this is probably a bad idea
+        //if (registeredProperties.indexOf(property) === -1) return modelInstance[property]; // not necessary because this won't get called for non-registered properties
         return modelDict[property];
       };
 
@@ -407,7 +454,7 @@ THE SOFTWARE.
       var removeAnimationInstance = function(animation) {
         var index = allAnimations.indexOf(animation);
         if (index > -1) allAnimations.splice(index,1);
-        var ensureOneMoreTick = false; // true = do not deregister yet, to ensure one more tick, but it is no longer needed. Redundant code in ticker to remove should not get called (but don't remove it just yet)
+        var ensureOneMoreTick = true;// true = do not deregister yet, to ensure one more tick. // true is needed to render after all animations have been removed. I previously thought it was no longer needed. Redundant code in ticker to remove should not get called (but don't remove it just yet)
         if (!ensureOneMoreTick) {
           if (!allAnimations.length) {
             pyonContext.deregisterTarget(receiver);
@@ -480,7 +527,7 @@ THE SOFTWARE.
         get: function() {
           return allAnimations.length;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       });
 
@@ -493,7 +540,7 @@ THE SOFTWARE.
           });
           return array;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       });
 
@@ -501,27 +548,39 @@ THE SOFTWARE.
         get: function() {
           return Object.keys(namedAnimations);
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       });
 
+     var modelPojo = function() {
+       var pojo = {};
+       Object.assign(pojo,modelInstance);
+       registeredProperties.forEach( function(key) {
+         pojo[key] = modelDict[key];
+       });
+       return pojo;
+     }
+
       Object.defineProperty(controller, "modelLayer", { // TODO: setLayer or just plain layer
+//         get: function() {
+//           var modelLayer = modelInstance;
+//           var layer = {};
+//           registeredProperties.forEach( function(key) {
+//             var value = modelDict[key];
+//             if (DELEGATE_MASSAGE_INPUT_OUTPUT) value = convertedValueOfPropertyWithFunction(value, key, delegateInstance.output);
+//             Object.defineProperty(layer, key, { // modelInstance has defined properties. Must redefine.
+//               value: value,
+//               enumerable: true,
+//               configurable: false
+//             });
+//           });
+//           Object.freeze(layer);
+//           return layer;
+//         },
         get: function() {
-          var modelLayer = modelInstance;
-          var layer = {};
-          registeredProperties.forEach( function(key) {
-            var value = modelDict[key];
-            if (DELEGATE_MASSAGE_INPUT_OUTPUT) value = convertedValueOfPropertyWithFunction(value, key, delegateInstance.output);
-            Object.defineProperty(layer, key, { // modelInstance has defined properties. Must redefine.
-              value: value,
-              enumerable: true,
-              configurable: false
-            });
-          });
-          Object.freeze(layer);
-          return layer;
+          return modelInstance;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       });
 
@@ -541,7 +600,7 @@ THE SOFTWARE.
           Object.freeze(layer);
           return layer;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       });
 
@@ -554,7 +613,9 @@ THE SOFTWARE.
             var transaction = pyonContext.currentTransaction();
             time = transaction.time;
           }
-          var presentationLayer = presentationTransform(modelDict,allAnimations,time,shouldSortAnimations,cachedPresentationLayer,finishedAnimations);
+          
+          var sourceLayer = modelPojo(); // necessary because valueForKey uses context.displaying. Don't want modelInstance or modelDict
+          var presentationLayer = presentationTransform(sourceLayer,allAnimations,time,shouldSortAnimations,cachedPresentationLayer,finishedAnimations); // not modelDict for first argument (need non animated properties), but it requires that properties like "presentationLayer" are not enumerable
           if (DELEGATE_MASSAGE_INPUT_OUTPUT && presentationLayer != cachedPresentationLayer) convertPropertiesOfObjectWithFunction(Object.keys(presentationLayer),presentationLayer,delegateInstance.output);
           cachedPresentationLayer = presentationLayer; // You must always set this
           finishedAnimations.forEach( function(animation) {
@@ -564,7 +625,7 @@ THE SOFTWARE.
           shouldSortAnimations = false;
           return presentationLayer;
         },
-        enumerable: true,
+        enumerable: false,//true,
         configurable: false
       });
 
@@ -640,8 +701,31 @@ THE SOFTWARE.
 
 
 
+    function decorate(receiver,delegate) { // decorate
+      if (!delegate) delegate = receiver;
+      pyonify(receiver,receiver,delegate);
+      Object.keys(receiver).forEach( function(key) { // can't provide a sort function for array/set type
+        if (isArray(receiver[key])) receiver.registerAnimatableProperty(key, PyonSet); // Don't know if you want PyonArray or PyonSet
+        receiver.registerAnimatableProperty(key);
+      });
+      receiver.needsDisplay(); // TODO: pyonify/layerize also need initial call to needsDisplay. FIXME: There is still a flash of un-styled content
+      return receiver;
+    }
+
+    function pyon(receiver,delegate) { // decorate
+      if (!delegate) delegate = receiver;
+      pyonify(receiver,receiver,delegate);
+      Object.keys(receiver).forEach( function(key) { // can't provide a sort function for array/set type
+        receiver.registerAnimatableProperty(key);
+      });
+      receiver.needsDisplay(); // TODO: pyonify/layerize also need initial call to needsDisplay. FIXME: There is still a flash of un-styled content
+      return receiver;
+    }
+
+
+
     function PyonLayer() { // Meant to be subclassed to provide implicit animation and clear distinction between model/presentation values
-      Pyonify(this,this,this); // new, layer does not provide layer or delegate accessors
+      pyonify(this,this,this); // new, layer does not provide layer or delegate accessors
     }
     PyonLayer.prototype = {};
     PyonLayer.prototype.constructor = PyonLayer;
@@ -652,7 +736,7 @@ THE SOFTWARE.
     };
 
     function PyonView() { // Meant to be subclassed to provide implicit animation and clear distinction between model/presentation values
-      Pyonify(this, {}, this); // provides layer accessor but not delegate
+      pyonify(this, {}, this); // provides layer accessor but not delegate
     }
     PyonView.prototype = {};
     PyonView.prototype.constructor = PyonView;
@@ -694,6 +778,16 @@ THE SOFTWARE.
       this.onend; // NOT FINISHED. callback function, fires regardless of fillMode. Should rename. Should also implement didStart, maybe didTick, etc.
       this.delegate; // Maybe I should use this instead of onend
       
+//       this.springSolver;
+//       this.springMass;
+//       this.springStiffness;
+//       this.springDamping;
+      this.webkitSpring;
+      this.mass;
+      this.stiffness;
+      this.damping;
+      this.velocity; // velocity or initialVelocity?
+
       if (settings) Object.keys(settings).forEach( function(key) {
         this[key] = settings[key];
       }.bind(this));
@@ -781,7 +875,7 @@ THE SOFTWARE.
         var changed = (iterationProgress !== this.progress);
         
         this.progress = iterationProgress;
-
+        
         return changed;
       },
 
@@ -807,6 +901,19 @@ THE SOFTWARE.
             this.completion = null; // lazy way to keep compositor from calling this twice, during fill phase
           }.bind(this);
           if (this.startTime === null || this.startTime === undefined) this.startTime = pyonContext.currentTransaction().time;
+
+          if (isFunction(this.webkitSpring) && exists(this.mass) && exists(this.stiffness) && exists(this.damping)) { // The constructor for the WebKit SpringSolver
+            var velocity = 0.0;
+            if (exists(this.velocity)) velocity = this.velocity;
+            //else if (exists(this.initialVelocity)) velocity = this.initialVelocity;
+            var spring = new this.webkitSpring(this.mass,this.stiffness,this.damping,velocity);//Spring(mass, stiffness, damping, initialVelocity)
+            var duration = springDurationSolver(spring);
+            this.duration = duration;
+            this.easing = function(progress) {
+              return spring.solve(progress * duration);
+            }
+          }
+
         } else {
           throw new Error("Pyon.Animation runAnimation invalid type. Must implement zero, add, subtract, and interpolate.");
         }
@@ -1262,6 +1369,8 @@ THE SOFTWARE.
       return { location: location, length: end - location };
     }
 
+
+
     return {
       Layer: PyonLayer, // The basic layer class, meant to be subclassed
       Animation: PyonAnimation, // The basic animation class.
@@ -1298,18 +1407,21 @@ THE SOFTWARE.
       currentTransaction: pyonContext.currentTransaction.bind(pyonContext),
       disableAnimation: pyonContext.disableAnimation.bind(pyonContext),
 
-      addAnimation: pyonContext.addAnimation.bind(pyonContext),
-      removeAnimation: pyonContext.removeAnimation.bind(pyonContext),
-      removeAllAnimations: pyonContext.removeAllAnimations.bind(pyonContext),
-      animationNamed: pyonContext.animationNamed.bind(pyonContext),
-      animationKeys: pyonContext.animationKeys.bind(pyonContext),
-      presentationLayer: pyonContext.presentationLayer.bind(pyonContext),
-      registerAnimatableProperty: pyonContext.registerAnimatableProperty.bind(pyonContext), // workaround for lack of Proxy
+      addAnimation: pyonContext.addAnimation.bind(pyonContext), // for layerized objects
+      removeAnimation: pyonContext.removeAnimation.bind(pyonContext), // for layerized objects
+      removeAllAnimations: pyonContext.removeAllAnimations.bind(pyonContext), // for layerized objects
+      animationNamed: pyonContext.animationNamed.bind(pyonContext), // for layerized objects
+      animationKeys: pyonContext.animationKeys.bind(pyonContext), // for layerized objects
+      presentationLayer: pyonContext.presentationLayer.bind(pyonContext), // for layerized objects
+      registerAnimatableProperty: pyonContext.registerAnimatableProperty.bind(pyonContext), // for layerized objects // workaround for lack of Proxy
 
       composite: presentationCompositePublic,
 
-      layerize: pyonContext.layerize.bind(pyonContext),
-      pyonify: Pyonify, // To mixin layer functionality in objects that are not PyonLayer subclasses.
+      pyonify: pyonify, // To mixin layer functionality in objects that are not PyonLayer subclasses.
+      layerize: pyonContext.layerize.bind(pyonContext), // pojo mode
+      //pyon: pyon, // I'm unsure about naming
+      decorate: pyon, // short version, first argument layer, second argument delegate.
+      //wantsLayer: pyon, // Slightly different from Core Animation, the argument is the item that becomes a layer.
     }
   })();
 
