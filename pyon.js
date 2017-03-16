@@ -26,8 +26,6 @@ THE SOFTWARE.
   var previousPyon = root.Pyon;
   var Pyon = root.Pyon = (function() {
     
-    var DELEGATE_MASSAGE_INPUT_OUTPUT = true;
-    
     // TODO: Handle no window and no performance.now
     
     var rAF = typeof window !== "undefined" && (
@@ -59,51 +57,6 @@ THE SOFTWARE.
       return !isNaN(parseFloat(w)) && isFinite(w); // I want infinity for repeat count. Probably not duration
     }
 
-
-
-    function springDurationSolver(spring,settledThreshold,timeThreshold) {
-      var sThreshold = settledThreshold || 0.0001;
-      var tThreshold = timeThreshold || 0.0001;
-
-      var tLeft;
-      var tRight = 0.0;
-      var T = 1.0;
-      var sRight = spring.solve(0.0);
-      var sLeft;
-
-      do { // First pass increases duration until the spring has settled.
-        sLeft = sRight;
-        tLeft = tRight;
-        tRight += T;
-        T *= 2;
-        sRight = spring.solve(tRight);
-      } while (Math.abs(sRight-sLeft) >= sThreshold); // When sDelta is below sThreshold, the longest possible duration is tLeft.
-
-      tRight = tLeft; // Reassign left & right values for next pass. Longest possible duration is now tRight.
-      sRight = sLeft;
-      sLeft = spring.solve(0.0);
-      tLeft = 0.0;
-      var bailout = false; // mass, stiffness, or damping of zero
-
-      do { // Second pass keeps shortening the duration to remove parts where it has settled.
-        var tMiddle = tLeft + (tRight-tLeft) / 2.0;
-        var sMiddle = spring.solve(tMiddle);
-        if (Math.abs(sRight-sMiddle) < sThreshold) {
-          bailout = (sRight == sMiddle || tRight == tMiddle);
-          sRight = sMiddle;
-          tRight = tMiddle;
-        } else {
-          bailout = (sLeft == sMiddle || tLeft == tMiddle);
-          sLeft = sMiddle;
-          tLeft = tMiddle;
-        }
-      } while (Math.abs(sRight-sLeft) >= sThreshold && tRight-tLeft >= tThreshold && !bailout);
-
-      return tRight;
-    }
-
-
-
     function PyonTransaction(settings,automaticallyCommit) {
       this.time = performance.now() / 1000; // value should probably be inherited from parent transaction
       this.disableAnimation = false; // value should probably be inherited from parent transaction
@@ -117,19 +70,18 @@ THE SOFTWARE.
       this.targets = [];
       this.transactions = [];
       this.ticking = false;
-      this.displaying = false;
+      this.rendering = false;
       this.animationFrame;
 
       this.mixins = [];
       this.modelLayers = []; // model layers // TODO: Cache presentation layers so you don't have to repeatedly calculate?
-      this.displayLayers = []; // cachedPresentationLayer
+      this.renderLayers = []; // cachedPresentationLayer
       this.unlayerize = function(modelLayer) {}; // TODO: implement. Or not.
       this.layerize = function(modelLayer,delegate) {
         var mixin = this.mixinForModelLayer(modelLayer);
         if (!mixin) {
           mixin = {};
-          if (!delegate) delegate = modelLayer;
-          pyonify(mixin,modelLayer,delegate);
+          Pyonify(mixin,modelLayer,delegate);
           this.mixins.push(mixin);
           this.modelLayers.push(modelLayer);
         } else {
@@ -142,7 +94,7 @@ THE SOFTWARE.
         var mixin = this.mixinForModelLayer(modelLayer);
         if (!mixin) { // maybe require layerize() rather than lazy create
           mixin = {};
-          pyonify(mixin,modelLayer);
+          Pyonify(mixin,modelLayer);
           this.mixins.push(mixin);
           this.modelLayers.push(modelLayer);
         }
@@ -199,7 +151,7 @@ THE SOFTWARE.
       commitTransaction: function() {
         var transaction = this.transactions.pop();
       },
-      flushTransaction: function() { // TODO: prevent unterminated when called within display
+      flushTransaction: function() { // TODO: prevent unterminated when called within render
         if (this.animationFrame) cAF(this.animationFrame); // Unsure if cancelling animation frame is needed.
         this.ticker(); // Probably should not commit existing transaction
       },
@@ -214,7 +166,7 @@ THE SOFTWARE.
         var index = this.targets.indexOf(target);
         if (index < 0) {
           this.targets.push(target);
-          this.displayLayers.push(null); // cachedPresentationLayer
+          this.renderLayers.push(null); // cachedPresentationLayer
         }
       },
 
@@ -222,10 +174,10 @@ THE SOFTWARE.
         var index = this.targets.indexOf(target);
         if (index > -1) {
           this.targets.splice(index, 1);
-          this.displayLayers.splice(index, 1); // cachedPresentationLayer
+          this.renderLayers.splice(index, 1); // cachedPresentationLayer
         }
       },
-      startTicking: function() { // TODO: consider cancelling previous animation frame.
+      startTicking: function() {
         if (!this.animationFrame) this.animationFrame = rAF(this.ticker.bind(this));
       },
       ticker: function() { // Need to manually cancel animation frame if calling directly.
@@ -235,19 +187,21 @@ THE SOFTWARE.
         
         while (i--) {
           var target = targets[i];
-          if (!target.animationCount) { // Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but is still needed when needsDisplay()
-            this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed. Different behavior than removalCallback & removeAnimationInstance, for example needsDisplay()
+          if (!target.animations.length) { // Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading.
+            //console.log("Deregister from inside ticker is redundant (removalCallback & removeAnimationInstance), but do not remove just yet. Still happens, maybe when hot reloading or when animation fails");
+            this.deregisterTarget(target); // Deregister here to ensure one more tick after last animation has been removed. Different and (should be) unneeded behavior than removalCallback & removeAnimationInstance
           }
-          var display = target.delegate.display;
-          if (!isFunction(display)) display = target.display;
-          if (isFunction(display)) {
-            this.displaying = true;
+          var render = target.delegate.render;
+          if (!isFunction(render)) render = target.render;
+          if (isFunction(render)) {
+            this.rendering = true;
             var presentationLayer = target.presentationLayer;
-            if (this.displayLayers[i] != presentationLayer) { // This is to suppress unnecessary displays. TODO: need isEqual.
-              if (target.animationCount) this.displayLayers[i] = presentationLayer; // cachedPresentationLayer
-              display.call(target.delegate);
+            if (this.renderLayers[i] !== presentationLayer) { // This is to suppress unnecessary renders. // React gets one immediate render then a tick. Optimize here and in presentationComposite
+              if (target.animations.length) this.renderLayers[i] = presentationLayer; // cachedPresentationLayer
+              var boundRender = render.bind(presentationLayer);
+              boundRender();
             }
-            this.displaying = false;
+            this.rendering = false;
           }
         }
         
@@ -270,90 +224,15 @@ THE SOFTWARE.
 
     var animationFromDescription = function(description) {
       var animation;
-      if (description && description instanceof PyonValue) {
-        throw new Error("Types are not animations."); // TODO: Allow passing a type as well as a description. It mostly already works, properties are copied just fine, you would just need to set the animation type to the original type's prototype.constructor.
-      } else if (description && description instanceof PyonAnimation) {
+      if (description && description instanceof PyonAnimation) {
         animation = description.copy();
       } else if (description && typeof description === "object") {
         animation = new PyonAnimation(description);
       } else if (isNumber(description)) animation = new PyonAnimation({duration:description});
-      
-      if (animation) {
-        if (isFunction(animation.type)) animation.type = new animation.type();
-        if (!animation.duration) animation.duration = 0.0; // TODO: need better validation. Currently split across constructor, setter, and here
-        if (animation.speed === null || typeof animation.speed === "undefined") animation.speed = 1; // need better validation
-        if (animation.iterations === null || typeof animation.iterations === "undefined") animation.iterations = 1; // negative values have no effect
-      }
       return animation;
     };
 
-
-    var presentationCompositePublic = function(sourceLayer, sourceAnimations, time) {
-      if (time === null || typeof time === "undefined") time = 0;
-      var resultAnimations = []
-      if (Array.isArray(sourceAnimations)) resultAnimations = sourceAnimations.map( function(animation) {
-        var animation = animationFromDescription(animation);
-        if (animation && (animation.startTime === null || typeof animation.startTime === "undefined")) animation.startTime = time;
-        if (!animation.from) animation.from = animation.type.zero();
-        if (!animation.to) animation.to = animation.type.zero();
-        if (animation.blend !== "absolute") animation.delta = animation.type.subtract(animation.from,animation.to);
-        return animation;
-      });
-      else if (sourceAnimations) resultAnimations = Object.keys(sourceAnimations).map( function(key) {
-        var animation = animationFromDescription(sourceAnimations[key]);
-        if (animation && (animation.startTime === null || typeof animation.startTime === "undefined")) animation.startTime = time;
-        if (!animation.from) animation.from = animation.type.zero();
-        if (!animation.to) animation.to = animation.type.zero();
-        if (animation.blend !== "absolute") animation.delta = animation.type.subtract(animation.from,animation.to);
-        return animation;
-      });
-      return presentationTransform(sourceLayer, resultAnimations, time, true, null, []);
-    }
-
-
-
-
-    var presentationTransform = function(sourceLayer,sourceAnimations,time,shouldSortAnimations,cachedPresentationLayer,finishedAnimations) { // COMPOSITING // New version but does not properly assign or return cachedPresentationLayer to suppress unnecessary displays if not animating. Less important than when animating.
-      var verbose = false;
-      if (false) Object.keys(sourceLayer).forEach( function(key) {
-        if (key === "transform") verbose = true;
-      });
-      if (false) sourceAnimations.forEach( function(animation) {
-        if (animation.property === "transform") verbose = true;
-      });
-      var presentationLayer = Object.assign({},sourceLayer); // You need to make sure display has non animated properties for example this.element
-      if (!sourceAnimations || !sourceAnimations.length) {
-        if (verbose) console.log("*** *** *** Pyon presentationTransform changed:%s; source:%s; result:%s;",progressChanged,sourceAnimations.length,JSON.stringify(presentationLayer));
-        return presentationLayer;
-      }
-      if (shouldSortAnimations) { // no argument means it will sort
-        sourceAnimations.sort( function(a,b) {
-          var A = a.index, B = b.index;
-          if (A === null || A === undefined) A = 0;
-          if (B === null || B === undefined) B = 0;
-          var result = A - B;
-          if (!result) result = a.startTime - b.startTime;
-          if (!result) result = a.number - b.number; // animation number is needed because sort is not guaranteed to be stable
-          return result;
-        });
-      }
-      var progressChanged = false;
-      sourceAnimations.forEach( function(animation) {
-        progressChanged = animation.composite(presentationLayer,time) || progressChanged;
-        if (animation.finished > 1) throw new Error("Animation finishing twice is not possible");
-        if (animation.finished > 0) finishedAnimations.push(animation);
-      });
-      if (!progressChanged && sourceAnimations.length && !finishedAnimations.length) {
-        if (cachedPresentationLayer) return cachedPresentationLayer
-      }
-      return presentationLayer;
-    }
-
-
-
-    function pyonify(receiver, modelInstance, delegateInstance) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
-      if (receiver.pyonified) throw new Error("Can't pyonify twice.");
-      receiver.pyonified = true;
+    function Pyonify(receiver, modelInstance, delegate) { // should be renamed: controller, layer, delegate // maybe reordered: layer, controller, delegate
       var modelDict = {}; // TODO: Unify modelDict, modelInstance, modelLayer. This is convoluted. Looking forward to having proxy
       var registeredProperties = [];
       var allAnimations = [];
@@ -362,155 +241,69 @@ THE SOFTWARE.
       //var animationCount = 0; // need to implement auto increment key
       var shouldSortAnimations = false;
       var animationNumber = 0; // order added
+      
       var cachedPresentationLayer = null;
       var cachedPresentationTime = -1;
-      if (modelInstance === null || typeof modelInstance === "undefined") modelInstance = {};
-      if (delegateInstance === null || typeof delegateInstance === "undefined") delegateInstance = {};
-      var controllerInstance = receiver;
-      if (controllerInstance === null || typeof controllerInstance === "undefined") controllerInstance = {};
+
+      if (modelInstance === null || modelInstance === undefined) modelInstance = receiver;
+
+      if (delegate === null || delegate === undefined) delegate = modelInstance;
+      receiver.delegate = delegate;
+
       var previousLayer = {}; // TODO: need better rules for resetting values to become current. Doing when layer is asked for doesn't work if PyonReact privately uses it.
 
-      var layerDescription = { // conditional with new handling of arguments
-        get: function() {
-          return modelInstance;
-        },
-        enumerable: false,//true,
-        configurable: false
-      }
-      if (receiver != modelInstance) layerDescription["set"] = function(layer) { // TODO: consider react like union instead of set
-        modelInstance = layer;
-        Object.keys(layer).forEach( function(key) {
-          controllerInstance.registerAnimatableProperty(key);
-        });
-      }
-      Object.defineProperty(receiver, "layer", layerDescription); // TODO: resolve layer vs. modelLayer
-
-
-      var delegateDescription = { // conditional with new handling of arguments
-        get: function() {
-          return delegateInstance;
-        },
-        enumerable: false,//true,
-        configurable: false
-      }
-      if (receiver != delegateInstance) delegateDescription["set"] = function(theDelegate) {
-        delegateInstance = theDelegate;
-      }
-      Object.defineProperty(receiver, "delegate", delegateDescription);
-
-
-      var controllerDescription = { // conditional with new handling of arguments
-        get: function() {
-          return controllerInstance;
-        },
-        enumerable: false,//true,
-        configurable: false
-      }
-      var controllerSetter = function(theController) {
-        controllerInstance = theController;
-        decorateTarget(theController); // side effects up the
-      }
-      if (receiver != controllerInstance) controllerDescription["set"] = controllerSetter;
-      Object.defineProperty(receiver, "controller", controllerDescription);
-
-
-      var implicitAnimation = function(property,value) { // TODO: Ensure modelLayer is fully populated before calls to animationForKey so you can use other props conditionally to determine animation
+      var implicitAnimation = function(property,value) {
         var description;
-        var delegate = delegateInstance;
-        if (isFunction(delegate.animationForKey)) description = delegate.animationForKey.call(delegate,property,value);
+        if (isFunction(delegate.animationForKey)) description = delegate.animationForKey(property,value);
         var animation = animationFromDescription(description);
         if (!animation) animation = animationFromDescription(defaultAnimations[property]);
-        if (animation) {
-          if (animation.property === null || typeof animation.property === "undefined") animation.property = property;
-          if (animation.from === null || typeof animation.from === "undefined") {
-            if (animation.blend === "absolute") animation.from = receiver.controller.presentationLayer[property]; // use presentation layer
-            else animation.from = modelDict[property];
-          }
-          if (animation.to === null || typeof animation.to === "undefined") animation.to = value;
-        }
         return animation;
       };
 
-      var valueForKey = function(property) { // only called for registered properties, don't need modelInstance.
-        if (pyonContext.displaying && cachedPresentationLayer) return cachedPresentationLayer[property]; // Doing this is probably a bad idea
-        //if (registeredProperties.indexOf(property) === -1) return modelInstance[property]; // not necessary because this won't get called for non-registered properties
+      var valueForKey = function(property) {
+        //if (pyonContext.rendering) return receiver.presentationLayer[property]; // FIXME: automatic presentationLayer causes unterminated. Was used with virtual-dom
+        if (pyonContext.rendering && cachedPresentationLayer) return cachedPresentationLayer[property];
         return modelDict[property];
       };
 
       var setValueForKey = function(value,property) {
+        // No animation if no change is fine, but I have to prevent pyon-react presentation from calling this.
         if (value === modelDict[property]) return; // New in Pyon! No animation if no change. This filters out repeat setting of unchanging model values while animating. Function props are always not equal (if you're not careful)
         previousLayer[property] = valueForKey(property); // for previousLayer.
         var animation;
         var transaction = pyonContext.currentTransaction(); // Pyon bug! This transaction might not get closed.
-        if (!transaction.disableAnimation) { // TODO: Does React setState batching mean disabling implicit state animation is impossible?
+        if (!transaction.disableAnimation) {
           animation = implicitAnimation(property,value);
-          if (animation) controllerInstance.addAnimation(animation); // this will copy a second time.
+          if (animation) {
+            if (animation.property === null || typeof animation.property === "undefined") animation.property = property;
+            if (animation.from === null || typeof animation.from === "undefined") {
+              if (animation.blend === "absolute") animation.from = receiver.presentationLayer[property]; // use presentation layer
+              else animation.from = modelDict[property];
+            }
+            if (animation.to === null || typeof animation.to === "undefined") animation.to = value;
+            receiver.addAnimation(animation); // this will copy a second time.
+          }
         }
         modelDict[property] = value;
         cachedPresentationLayer = null;
-        if (!animation) controllerInstance.needsDisplay();
+        if (!animation) receiver.needsDisplay();
       };
 
-      var removeAnimationInstance = function(animation) {
-        var index = allAnimations.indexOf(animation);
-        if (index > -1) allAnimations.splice(index,1);
-        var ensureOneMoreTick = true;// true = do not deregister yet, to ensure one more tick. // true is needed to render after all animations have been removed. I previously thought it was no longer needed. Redundant code in ticker to remove should not get called (but don't remove it just yet)
-        if (!ensureOneMoreTick) {
-          if (!allAnimations.length) {
-            pyonContext.deregisterTarget(receiver);
-          }
-        }
-      }
-
-      var removalCallback = function(animation,key) {
-        if (key !== null && key !== undefined) controllerInstance.removeAnimation(key);
-        else removeAnimationInstance(animation);
-      }
-
-      var controller = controllerInstance;
-
-      var convertedValueOfPropertyWithFunction = function(value,property,funky) { // DELEGATE_MASSAGE_INPUT_OUTPUT // mutates
-        if (isFunction(funky)) return funky(property,value);
-        return value;
-      }
-      var convertPropertyOfObjectWithFunction = function(property,object,funky) { // DELEGATE_MASSAGE_INPUT_OUTPUT // mutates
-        if (object && isFunction(funky)) {
-          var value = object[property];
-          if (value !== null && typeof value !== "undefined") object[property] = funky(property,value);
-        }
-      }
-      var convertPropertiesOfObjectWithFunction = function(properties,object,funky) { // DELEGATE_MASSAGE_INPUT_OUTPUT // mutates
-        properties.forEach( function(property) {
-          convertPropertyOfObjectWithFunction(property,object,funky);
-        });
-      }
-      var convertPropertiesAsPropertyOfObjectWithFunction = function(properties,object,funky) { // animation from, to, and delta // DELEGATE_MASSAGE_INPUT_OUTPUT // mutates
-        if (object && isFunction(funky)) {
-          var property = object.property;
-          properties.forEach( function(item) {
-            var value = object[item];
-            if (value !== null && typeof value !== "undefined") object[item] = funky(property,value);
-            convertPropertyOfObjectWithFunction(property,object,funky);
-          });
-        }
-      }
-
-      controller.registerAnimatableProperty = function(property, defaultValue) { // Workaround for lack of Proxy // Needed to trigger implicit animation. // FIXME: defaultValue is broken. TODO: Proper default animations dictionary.
+      var registerAnimatableProperty = function(property, defaultValue) { // Needed to trigger implicit animation.
         if (registeredProperties.indexOf(property) === -1) registeredProperties.push(property);
         var descriptor = Object.getOwnPropertyDescriptor(modelInstance, property);
         //if (descriptor && descriptor.configurable === false) { // need automatic registration
-          //return; // Fail silently so you can set default animation by registering it again
+          // Fail silently so you can set default animation by registering it again
+          //return;
         //}
         var defaultAnimation = animationFromDescription(defaultValue);
-        if (DELEGATE_MASSAGE_INPUT_OUTPUT) convertPropertiesAsPropertyOfObjectWithFunction(["from","to","delta"],defaultAnimation,delegateInstance.input);
         
         if (defaultAnimation) defaultAnimations[property] = defaultAnimation; // maybe set to defaultValue not defaultAnimation
-        else if (defaultAnimations[property] === null) delete defaultAnimations[property]; // property is still animatable
+        else if (defaultAnimations[property]) delete defaultAnimations[property]; // property is still animatable
         
         if (!descriptor || descriptor.configurable === true) {
-          var modelLayer = receiver.layer;
-          modelDict[property] = modelLayer[property];
-          Object.defineProperty(modelLayer, property, { // ACCESSORS
+          modelDict[property] = modelInstance[property];
+          Object.defineProperty(modelInstance, property, { // ACCESSORS
             get: function() {
               return valueForKey(property);
             },
@@ -522,76 +315,50 @@ THE SOFTWARE.
           });
         }
       }
+      receiver.registerAnimatableProperty = registerAnimatableProperty;
+      if (delegate) delegate.registerAnimatableProperty = registerAnimatableProperty;
 
-      Object.defineProperty(controller, "animationCount", { // Performs better than asking for animations.length, especially when ticking.
+      Object.defineProperty(receiver, "animations", {
         get: function() {
-          return allAnimations.length;
-        },
-        enumerable: false,//true,
-        configurable: false
-      });
-
-      Object.defineProperty(controller, "animations", {
-        get: function() {
-          var array = allAnimations.map(function (animation) {
-            var copy = animation.copy(); // TODO: optimize me. Lots of copying. Potential optimization. Instead maybe freeze properties.
-            if (DELEGATE_MASSAGE_INPUT_OUTPUT) convertPropertiesAsPropertyOfObjectWithFunction(["from","to","delta"],copy,delegateInstance.output);
-            return copy
+          return allAnimations.map(function (animation) {
+            return animation.copy(); // Lots of copying. Potential optimization. Instead maybe freeze properties.
           });
-          return array;
         },
-        enumerable: false,//true,
+        enumerable: false,
         configurable: false
       });
 
-      Object.defineProperty(controller, "animationNames", {
+      Object.defineProperty(receiver, "animationNames", {
         get: function() {
           return Object.keys(namedAnimations);
         },
-        enumerable: false,//true,
+        enumerable: false,
         configurable: false
       });
 
-     var modelPojo = function() {
-       var pojo = {};
-       Object.assign(pojo,modelInstance);
-       registeredProperties.forEach( function(key) {
-         pojo[key] = modelDict[key];
-       });
-       return pojo;
-     }
-
-      Object.defineProperty(controller, "modelLayer", { // TODO: setLayer or just plain layer
-//         get: function() {
-//           var modelLayer = modelInstance;
-//           var layer = {};
-//           registeredProperties.forEach( function(key) {
-//             var value = modelDict[key];
-//             if (DELEGATE_MASSAGE_INPUT_OUTPUT) value = convertedValueOfPropertyWithFunction(value, key, delegateInstance.output);
-//             Object.defineProperty(layer, key, { // modelInstance has defined properties. Must redefine.
-//               value: value,
-//               enumerable: true,
-//               configurable: false
-//             });
-//           });
-//           Object.freeze(layer);
-//           return layer;
-//         },
+      Object.defineProperty(receiver, "modelLayer", {
         get: function() {
-          return modelInstance;
+          var layer = Object.create(modelInstance);
+          registeredProperties.forEach( function(key) {
+            Object.defineProperty(layer, key, { // modelInstance has defined properties. Must redefine.
+              value: modelDict[key],
+              enumerable: true,
+              configurable: false
+            });
+          });
+          Object.freeze(layer);
+          return layer;
         },
-        enumerable: false,//true,
+        enumerable: true,
         configurable: false
       });
 
-      Object.defineProperty(controller, "previousLayer", {
-        get: function() { // fuct
-          var layer = Object.assign({},modelDict); // // // //
+      Object.defineProperty(receiver, "previousLayer", {
+        get: function() {
+          var layer = Object.assign({},modelInstance,modelDict);
           Object.keys(previousLayer).forEach( function(key) {
-            var value = previousLayer[key];
-            if (DELEGATE_MASSAGE_INPUT_OUTPUT) value = convertedValueOfPropertyWithFunction(value, key, delegateInstance.output);
             Object.defineProperty(layer, key, {
-              value: value,
+              value: previousLayer[key],
               enumerable: true,
               configurable: false
             });
@@ -600,51 +367,96 @@ THE SOFTWARE.
           Object.freeze(layer);
           return layer;
         },
-        enumerable: false,//true,
+        enumerable: true,
         configurable: false
       });
 
-      Object.defineProperty(controller, "presentationLayer", {
-        get: function() {
-          
-          var finishedAnimations = [];
-          var time = 0; // Temporary workaround. Not sure if still needed. It should be safe to create transactions.
-          if (allAnimations.length) { // Do not create a transaction if there are no animations else the transaction will not be automatically closed.
-            var transaction = pyonContext.currentTransaction();
-            time = transaction.time;
-          }
-          
-          var sourceLayer = modelPojo(); // necessary because valueForKey uses context.displaying. Don't want modelInstance or modelDict
-          var presentationLayer = presentationTransform(sourceLayer,allAnimations,time,shouldSortAnimations,cachedPresentationLayer,finishedAnimations); // not modelDict for first argument (need non animated properties), but it requires that properties like "presentationLayer" are not enumerable
-          if (DELEGATE_MASSAGE_INPUT_OUTPUT && presentationLayer != cachedPresentationLayer) convertPropertiesOfObjectWithFunction(Object.keys(presentationLayer),presentationLayer,delegateInstance.output);
-          cachedPresentationLayer = presentationLayer; // You must always set this
-          finishedAnimations.forEach( function(animation) {
-            if (isFunction(animation.completion)) animation.completion();
+      var presentationComposite = function() { // New version but does not properly assign or return cachedPresentationLayer to suppress unnecessary renders if not animating. Less important than when animating.
+        var presentationLayer = Object.assign({},modelInstance,modelDict); // You need to make sure render has non animated properties for example this.element
+        if (!allAnimations.length) return presentationLayer;
+        Object.defineProperty(presentationLayer, "presentationLayer", { // Differences with CA, layer does not actually have modelLayer and presentationLayer accessors, the receiver does, which is not necessarily a layer. You may not want to do this.
+          value: presentationLayer,
+          enumerable: false,
+          configurable: false
+        });
+        if (shouldSortAnimations) {
+          allAnimations.sort( function(a,b) {
+            var A = a.index, B = b.index;
+            if (A === null || A === undefined) A = 0;
+            if (B === null || B === undefined) B = 0;
+            var result = A - B;
+            if (!result) result = a.startTime - b.startTime;
+            if (!result) result = a.number - b.number; // animation number is needed because sort is not guaranteed to be stable
+            return result;
           });
-          
           shouldSortAnimations = false;
-          return presentationLayer;
+        }
+        var finishedAnimations = [];
+        var progressChanged = false;
+        if (allAnimations.length) { // Do not create a transaction if there are no animations else the transaction will not be automatically closed.
+          var transaction = pyonContext.currentTransaction();
+          var now = transaction.time;
+          allAnimations.forEach( function(animation) {
+            progressChanged = animation.composite(presentationLayer,now) || progressChanged;
+            if (animation.finished > 1) throw new Error("Animation finishing twice is not possible");
+            if (animation.finished > 0) finishedAnimations.push(animation);
+          });
+        }
+        if (!progressChanged && allAnimations.length && !finishedAnimations.length) {
+          if (!cachedPresentationLayer) cachedPresentationLayer = presentationLayer;
+          else return cachedPresentationLayer; // Suppress unnecessary renders. // React still gets one immediate render then a tick.
+        }
+        finishedAnimations.forEach( function(animation) {
+          if (isFunction(animation.completion)) animation.completion();
+        });
+        cachedPresentationLayer = presentationLayer;
+        return presentationLayer;
+      }
+
+      Object.defineProperty(receiver, "presentationLayer", {
+        get: function() {
+          return presentationComposite(); // COMPOSITING. Have separate compositor object?
         },
-        enumerable: false,//true,
+        enumerable: false,
         configurable: false
       });
+      if (receiver !== delegate) {
+        Object.defineProperty(delegate, "presentationLayer", { // DUPLICATE
+          get: function() {
+            return presentationComposite();
+          },
+          enumerable: false,
+          configurable: false
+        });
+      }
 
-      controller.needsDisplay = function() { // This should be used instead of directly calling display
+      receiver.needsDisplay = function() {
+        // This should be used instead of directly calling render
         pyonContext.registerTarget(receiver);
       }
 
-      controller.addAnimation = function(animation,name) { // should be able to pass a description if type is registered
-        if (false && animation.property) controllerObject.registerAnimatableProperty(animation.property); // Sure why not
-        animation = animationFromDescription(animation);
-        if (typeof animation === "undefined" || animation === null || !animation instanceof PyonAnimation) throw new Error("Animations must be a Pyon.Animation or subclass.");
-        if (DELEGATE_MASSAGE_INPUT_OUTPUT) {
-          var originalValue = animation.to;
-          convertPropertiesAsPropertyOfObjectWithFunction(["from","to","delta"],animation,delegateInstance.input);
-          if (isFunction(delegateInstance.typeOfProperty)) {
-            var type = delegateInstance.typeOfProperty.call(delegateInstance,animation.property,animation.to);
-            if (type !== null && typeof type !== "undefined") animation.type = type;
+      var removeAnimationInstance = function(animation) {
+        var index = allAnimations.indexOf(animation);
+        if (index > -1) allAnimations.splice(index,1);
+        var ensureOneMoreTick = false; // true = do not deregister yet, to ensure one more tick, but it is no longer needed. Redundant code in ticker to remove should not get called (but don't remove it just yet)
+        if (!ensureOneMoreTick) {
+          if (!allAnimations.length) {
+            //console.log("finishedAnimation:%s;",animation.property);
+            pyonContext.deregisterTarget(receiver);
           }
         }
+      }
+
+      var removalCallback = function(animation,key) {
+        if (key !== null && key !== undefined) receiver.removeAnimation(key);
+        else removeAnimationInstance(animation);
+      }
+
+      receiver.addAnimation = function(animation,name) { // should be able to pass a description if type is registered
+        if (!(animation instanceof PyonAnimation) && animation !== null && typeof animation === "object") {
+          animation = animationFromDescription(animation);
+        }
+        if (typeof animation === "undefined" || animation === null || !animation instanceof PyonAnimation) throw new Error("Animations must be a Pyon.Animation or subclass.");
         if (!allAnimations.length) pyonContext.registerTarget(receiver);
         var copy = animation.copy();
         copy.number = animationNumber++;
@@ -658,110 +470,65 @@ THE SOFTWARE.
         copy.runAnimation(receiver, name, removalCallback);
       }
 
-      controller.removeAnimation = function(name) {
+      receiver.removeAnimation = function(name) {
         var animation = namedAnimations[name];
-        if (animation) {
-          removeAnimationInstance(animation);
-          delete namedAnimations[name];
-          var delegate = animation.delegate;
-          if (exists(delegate)) { // do here not in removeAnimationInstance because delegate animationDidStop gets called when animations enter fill phase, not when removed.
-            if (isFunction(delegate.animationDidStop)) {
-              delegate.animationDidStop.call(delegate,animation.settings,false);
-            }
-            animation.delegate = null;
-          }
-        }
+        removeAnimationInstance(animation);
+        delete namedAnimations[name];
       }
 
-      controller.removeAllAnimations = function() {
-        allAnimations.length = 0;
+      receiver.removeAllAnimations = function() {
+        allAnimations = [];
         namedAnimations = {};
-        allAnimations.forEach( function(animation) {
-          var delegate = animation.delegate;
-          if (exists(delegate)) { // do here not in removeAnimationInstance because delegate animationDidStop gets called when animations enter fill phase, not when removed.
-            if (isFunction(delegate.animationDidStop)) {
-              delegate.animationDidStop.call(delegate,animation.settings,false);
-            }
-            animation.delegate = null;
-          }
-        });
       }
 
-      controller.animationNamed = function(name) {
+      receiver.animationNamed = function(name) {
         var animation = namedAnimations[name];
-        if (animation) {
-          var copy = animation.copy();
-          if (DELEGATE_MASSAGE_INPUT_OUTPUT) convertPropertiesAsPropertyOfObjectWithFunction(["from","to","delta"],copy,delegateInstance.output);
-          return copy;
-        }
+        if (animation) return animation.copy();
         return null;
       }
-
-    }
-
-
-
-    function decorate(receiver,delegate) { // decorate
-      if (!delegate) delegate = receiver;
-      pyonify(receiver,receiver,delegate);
-      Object.keys(receiver).forEach( function(key) { // can't provide a sort function for array/set type
-        if (isArray(receiver[key])) receiver.registerAnimatableProperty(key, PyonSet); // Don't know if you want PyonArray or PyonSet
-        receiver.registerAnimatableProperty(key);
-      });
-      receiver.needsDisplay(); // TODO: pyonify/layerize also need initial call to needsDisplay. FIXME: There is still a flash of un-styled content
-      return receiver;
-    }
-
-    function pyon(receiver,delegate) { // decorate
-      if (!delegate) delegate = receiver;
-      pyonify(receiver,receiver,delegate);
-      Object.keys(receiver).forEach( function(key) { // can't provide a sort function for array/set type
-        receiver.registerAnimatableProperty(key);
-      });
-      receiver.needsDisplay(); // TODO: pyonify/layerize also need initial call to needsDisplay. FIXME: There is still a flash of un-styled content
-      return receiver;
     }
 
 
 
     function PyonLayer() { // Meant to be subclassed to provide implicit animation and clear distinction between model/presentation values
-      pyonify(this,this,this); // new, layer does not provide layer or delegate accessors
+      Pyonify(this);
     }
     PyonLayer.prototype = {};
     PyonLayer.prototype.constructor = PyonLayer;
     PyonLayer.prototype.animationForKey = function(key,value,target) {
       return null;
     };
-    PyonLayer.prototype.display = function() {
-    };
 
-    function PyonView() { // Meant to be subclassed to provide implicit animation and clear distinction between model/presentation values
-      pyonify(this, {}, this); // provides layer accessor but not delegate
+
+
+    function GraphicsLayer() {
+      // This should more closely resemble CALayer, PyonLayer just focuses on animations and triggering them
+      // This should have renderInContext: instead of render:
+      // Provide frame and bounds, allow sublayers.
+      // apply transforms.
+      // all drawing into top level layer backed object that holds canvas.
+      // Only top layer has a canvas element
     }
-    PyonView.prototype = {};
-    PyonView.prototype.constructor = PyonView;
-    PyonView.prototype.animationForKey = function(key,value,target) {
-      return null;
-    };
-    PyonView.prototype.display = function() {
-    };
 
 
 
-    function PyonAnimation(settings) { // The base animation class
+
+
+function PyonAnimation(settings) { // The base animation type
       if (this instanceof PyonAnimation === false) {
         throw new Error("Pyon.Animation is a constructor, not a function. Do not call it directly.");
       }
       if (this.constructor === PyonAnimation) {
         //throw new Error("Pyon.Animation is an abstract base class.");
       }
-      //this.settings = settings;
+      this.settings = settings;
       this.property; // string, property name
       this.from; // type specific. Subclasses must implement zero, add, subtract and interpolate. invert is no longer used
       this.to; // type specific. Subclasses must implement zero, add, subtract and interpolate. invert is no longer used
+      this.onend; // NOT FINISHED. callback function, fires regardless of fillMode. Should rename. Should also implement didStart, maybe didTick, etc.
       this.duration = 0.0; // float. In seconds. Need to validate/ensure >= 0.
       this.easing; // NOT FINISHED. currently callback function only, need cubic bezier and presets. Defaults to linear
-      this.speed = 1.0; // NOT FINISHED. float. RECONSIDER. Pausing currently not possible like in Core Animation. Layers have speed, beginTime, timeOffset!
+      this.speed = 1.0; // float. RECONSIDER. Pausing currently not possible like in Core Animation. Layers have speed, beginTime, timeOffset!
       this.iterations = 1; // float >= 0.
       this.autoreverse; // boolean. When iterations > 1. Easing also reversed. Maybe should be named "autoreverses", maybe should be camelCased
       this.fillMode; // string. Defaults to "none". NOT FINISHED. "forwards" and "backwards" are "both". maybe should be named "fill". maybe should just be a boolean
@@ -774,46 +541,15 @@ THE SOFTWARE.
       this.startTime; // float
       this.delta;
       this.type = PyonNumber;
-      this.progress = null; // 0 would mean first frame does not count as a change which I want for stepEnd but probably not anything else. Also complicating is separate cachedPresentationlayer and context displayLayers
-      this.onend; // NOT FINISHED. callback function, fires regardless of fillMode. Should rename. Should also implement didStart, maybe didTick, etc.
-      this.delegate; // Maybe I should use this instead of onend
-      
-//       this.springSolver;
-//       this.springMass;
-//       this.springStiffness;
-//       this.springDamping;
-      this.webkitSpring;
-      this.mass;
-      this.stiffness;
-      this.damping;
-      this.velocity; // velocity or initialVelocity?
+      this.progress = null;
 
       if (settings) Object.keys(settings).forEach( function(key) {
         this[key] = settings[key];
       }.bind(this));
-
-      Object.defineProperty(this, "settings", {
-        get: function() {
-          var result = Object.assign({},settings); // TODO: Use Object.assign polyfill
-          Object.keys(this).forEach( function(key) {
-            if (key !== "settings") result[key] = this[key];
-          }.bind(this));
-          return result;
-        },
-        enumerable: false, // temporary, until I have a nicely formatted toString and toJSON
-        configurable: true // gets copied
-      });
-
     }
 
     PyonAnimation.prototype = {
       constructor: PyonAnimation,
-//       toString: function() {
-//         return JSON.stringify(this.settings);
-//       },
-//       toJSON: function() {
-//         return this.settings.toString();
-//       },
       composite: function(onto,now) {
         if (this.startTime === null || this.startTime === undefined) throw new Error("Cannot composite an animation that has not been started."); // return this.type.zero();
         var elapsed = Math.max(0, now - (this.startTime + this.delay));
@@ -843,7 +579,7 @@ THE SOFTWARE.
         else { 
           // TODO: match web-animations syntax
           // TODO: refine regex, perform once in runAnimation 
-         // FIXME: step-end displays twice (actually thrice). Should I just display once, not at the start?
+         // FIXME: step-end renders twice (actually thrice). Should I just render once, not at the start?
          
           var rounded = 0.5-(Math.cos(iterationProgress * Math.PI) / 2);
           if (this.easing) {
@@ -864,62 +600,41 @@ THE SOFTWARE.
         
         var result = value;
         var underlying = onto[property];
-        if (typeof underlying == "undefined" || underlying === null) underlying = this.type.zero(this.to); // TODO: assess this // FIXME: transform functions? Underlying will never be undefined as it is a registered property, added to modelLayer
-
+        //if (typeof underlying == "undefined" || underlying === null) underlying = this.type.zero(this.to); // TODO: assess this // FIXME: transform functions? Underlying will never be undefined as it is a registered property, added to modelLayer
         if (this.additive) result = this.type.add(underlying,value);
 
         if (this.sort && Array.isArray(result)) result.sort(this.sort);
-
         onto[property] = result;
         
         var changed = (iterationProgress !== this.progress);
         
         this.progress = iterationProgress;
-        
         return changed;
       },
 
       runAnimation: function(layer,key,removalCallback) {
+        if (isFunction(this.type)) this.type = new this.type();
         if (isFunction(this.type.zero) && isFunction(this.type.add) && isFunction(this.type.subtract) && isFunction(this.type.interpolate)) {
-          if (!this.from) this.from = this.type.zero(this.to);
-          if (!this.to) this.to = this.type.zero(this.from);
-          if (this.blend !== "absolute") {
-            this.delta = this.type.subtract(this.from,this.to);
-          }
+          if (!this.duration) this.duration = 0.0; // need better validation. Currently is split across constructor, setter, and here
+          if (this.speed === null || this.speed === undefined) this.speed = 1; // need better validation
+          if (this.iterations === null || this.iterations === undefined) this.iterations = 1; // negative values have no effect
+          if (this.blend !== "absolute") this.delta = this.type.subtract(this.from,this.to);
+          
           this.completion = function() { // COMPLETION
             if (!this.fillMode || this.fillMode === "none") {
               removalCallback(this,key);
             }
             if (isFunction(this.onend)) this.onend();
-            var delegate = this.delegate;
-            if (exists(delegate)) { // do here not in removeAnimationInstance because delegate animationDidStop gets called when animations enter fill phase, not when removed.
-              if (isFunction(delegate.animationDidStop)) {
-                delegate.animationDidStop.call(delegate,this.settings,true);
-              }
-              this.delegate = null;
-            }
             this.completion = null; // lazy way to keep compositor from calling this twice, during fill phase
           }.bind(this);
           if (this.startTime === null || this.startTime === undefined) this.startTime = pyonContext.currentTransaction().time;
-
-          if (isFunction(this.webkitSpring) && exists(this.mass) && exists(this.stiffness) && exists(this.damping)) { // The constructor for the WebKit SpringSolver
-            var velocity = 0.0;
-            if (exists(this.velocity)) velocity = this.velocity;
-            //else if (exists(this.initialVelocity)) velocity = this.initialVelocity;
-            var spring = new this.webkitSpring(this.mass,this.stiffness,this.damping,velocity);//Spring(mass, stiffness, damping, initialVelocity)
-            var duration = springDurationSolver(spring);
-            this.duration = duration;
-            this.easing = function(progress) {
-              return spring.solve(progress * duration);
-            }
-          }
-
         } else {
           throw new Error("Pyon.Animation runAnimation invalid type. Must implement zero, add, subtract, and interpolate.");
         }
       },
     
-      copy: function() { // TODO: "Not Optimized. Reference to a variable that requires dynamic lookup" !!! // https://github.com/GoogleChrome/devtools-docs/issues/53
+      copy: function() { // optimize me // "Not Optimized. Reference to a variable that requires dynamic lookup"
+        //return Object.create(this);
         var constructor = this.constructor;
         var copy = new constructor(this.settings);
         var keys = Object.getOwnPropertyNames(this);
@@ -933,7 +648,7 @@ THE SOFTWARE.
 
 
 
-    function PyonValue(settings) { // The base type class
+    function PyonValue(settings) { // The base animation type
       if (this instanceof PyonValue === false) {
         throw new Error("Pyon.ValueType is a constructor, not a function. Do not call it directly.");
       }
@@ -952,10 +667,8 @@ THE SOFTWARE.
       subtract: function() {
         throw new Error("Pyon.ValueType subclasses must implement function: subtract(a,b) in the form subtract b from a");
       },
-      interpolate: function(a,b,progress) { // new, meant to be overridden, otherwise you get discrete.
-        //throw new Error("Pyon.ValueType subclasses must implement function: interpolate(a,b,progress)");
-        if (progress >= 1) return b;
-        return a;
+      interpolate: function() {
+        throw new Error("Pyon.ValueType subclasses must implement function: interpolate(a,b,progress)");
       }
     }
 
@@ -1042,53 +755,20 @@ THE SOFTWARE.
 
     function PyonSet(settings) {
       PyonValue.call(this,settings);
-      if (isFunction(settings)) this.sort = settings;
-      else if (settings && isFunction(settings.sort)) this.sort = settings.sort;
     }
     PyonSet.prototype = Object.create(PyonValue.prototype);
     PyonSet.prototype.constructor = PyonSet;
     PyonSet.prototype.zero = function() {
       return [];
     };
-    PyonSet.prototype.add = function(a,b) { // add b to a
+    PyonSet.prototype.add = function(a,b) {
       if (!Array.isArray(a) && !Array.isArray(b)) return [];
       if (!Array.isArray(a)) return b;
       if (!Array.isArray(b)) return a;
-      
-      var array = [];
-      var aLength = a.length;
-      var bLength = b.length;
-      var i = 0;
-      var j = 0;
-      if (isFunction(this.sort)) while (i < aLength || j < bLength) {
-        if (i == aLength) {
-          array.push(b[j]);
-          j++;
-        } else if (j == bLength) {
-          array.push(a[i]);
-          i++;
-        } else {
-          var A = a[i];
-          var B = b[j];
-          var sort = this.sort(A,B);
-          if (sort === 0) {
-            array.push(A);
-            i++;
-            j++;
-          } else if (sort < 0) {
-            array.push(A);
-            i++;
-          } else if (sort > 0) {
-            array.push(B);
-            j++;
-          }
-        }
-      } else {
-        array = a.slice(0);
-        i = b.length;
-        while (i--) {
-          if (a.indexOf(b[i]) < 0) array.push(b[i]);
-        }
+      var array = a.slice(0);
+      var i = b.length;
+      while (i--) {
+        if (a.indexOf(b[i]) < 0) array.push(b[i]);
       }
       return array;
     };
@@ -1096,39 +776,11 @@ THE SOFTWARE.
       if (!Array.isArray(a) && !Array.isArray(b)) return [];
       if (!Array.isArray(a)) return b;
       if (!Array.isArray(b)) return a;
-      
-      var array = [];
-      var aLength = a.length;
-      var bLength = b.length;
-      var i = 0;
-      var j = 0;
-      if (isFunction(this.sort)) while (i < aLength || j < bLength) {
-        if (i == aLength) {
-          break;
-        } else if (j == bLength) {
-          array.push(a[i]);
-          i++;
-        } else {
-          var A = a[i];
-          var B = b[j];
-          var sort = this.sort(A,B);
-          if (sort === 0) {
-            i++;
-            j++;
-          } else if (sort < 0) {
-            array.push(A);
-            i++;
-          } else if (sort > 0) {
-            j++;
-          }
-        }
-      } else {
-        array = a.slice(0);
-        i = b.length;
-        while (i--) {
-          var loc = array.indexOf(b[i]);
-          if (loc > -1) array.splice(loc,1);
-        }
+      var array = a.slice(0);
+      var i = b.length;
+      while (i--) {
+        var loc = array.indexOf(b[i]);
+        if (loc > -1) array.splice(loc,1);
       }
       return array;
     };
@@ -1140,7 +792,6 @@ THE SOFTWARE.
 
     function PyonDict(settings) {
       PyonValue.call(this,settings);
-      throw new Error("PyonDict not supported");
     }
     PyonDict.prototype = Object.create(PyonValue.prototype);
     PyonDict.prototype.constructor = PyonDict;
@@ -1151,280 +802,73 @@ THE SOFTWARE.
       if (!exists(a) && !exists(b)) return {};
       if (!exists(a)) return b;
       if (!exists(b)) return a;
+      var A = Object.keys(a);
+      var B = Object.keys(b);
       var dict = {};
-      Object.keys(a).forEach( function(key) {
+      var i = A.length;
+      while (i--) {
+        var key = A[i];
         dict[key] = a[key];
-      });
-      Object.keys(b).forEach( function(key) {
-        dict[key] = b[key];
-      });
+      }
+      var j = B.length;
+      while (j--) {
+        var key = B[j];
+        if (A.indexOf(key) < 0) dict.push(b[key]);
+      }
       return dict;
     };
-    PyonDict.prototype.subtract = function(a,b) { // remove b from a // probably remove keys from a not in b
+    PyonDict.prototype.subtract = function(a,b) { // remove b from a
+      if (!exists(a) && !exists(b)) return {};
+      if (!exists(a)) return b;
+      if (!exists(b)) return a;
+      var A = Object.keys(a);
+      var B = Object.keys(b);
       var dict = {};
-      Object.keys(a).forEach( function(key) {
-        if (exists(b[key])) dict[key] = a[key];
-      });
+      var i = A.length;
+      while (i--) {
+        var key = A[i];
+        dict[key] = a[key];
+      }
+      var j = B.length;
+      while (j--) {
+        var key = B[j];
+        delete dict[key];
+      }
       return dict;
-//       if (!exists(a) && !exists(b)) return {};
-//       if (!exists(a)) return b;
-//       if (!exists(b)) return a;
-//       var A = Object.keys(a);
-//       var B = Object.keys(b);
-//       var dict = {};
-//       var i = A.length;
-//       while (i--) {
-//         var key = A[i];
-//         dict[key] = a[key];
-//       }
-//       var j = B.length;
-//       while (j--) {
-//         var key = B[j];
-//         delete dict[key];
-//       }
-//       console.log("Pyon Dict subtract a:%s; b:%s; result:%s;",JSON.stringify(a),JSON.stringify(b),JSON.stringify(dict));
-//       return dict;
     };
     PyonDict.prototype.interpolate = function(a,b,progress) {
       if (progress >= 1) return b;
       return a;
     };
 
-
-
-    function PyonPoint(settings) {
-      PyonValue.call(this,settings);
-    }
-    PyonPoint.prototype = Object.create(PyonValue.prototype);
-    PyonPoint.prototype.constructor = PyonPoint;
-    PyonPoint.prototype.zero = function() {
-      return PyonZeroPoint();
-    };
-    PyonPoint.prototype.add = function(a,b) {
-      return PyonMakePoint(a.x + b.x, a.y + b.y);
-    };
-    PyonPoint.prototype.subtract = function(a,b) { // subtract b from a
-      return PyonMakePoint(a.x - b.x, a.y - b.y);
-    };
-    PyonPoint.prototype.interpolate = function(a,b,progress) {
-      return PyonMakePoint(a.x + (b.x-a.x) * progress, a.y + (b.y-a.y) * progress);
-    };
-
-
-
-    function PyonSize(settings) {
-      PyonValue.call(this,settings);
-    }
-    PyonSize.prototype = Object.create(PyonValue.prototype);
-    PyonSize.prototype.constructor = PyonSize;
-    PyonSize.prototype.zero = function() {
-      return PyonZeroSize();
-    };
-    PyonSize.prototype.add = function(a,b) {
-      return PyonMakeSize(a.width + b.width, a.height + b.height);
-    };
-    PyonSize.prototype.subtract = function(a,b) { // subtract b from a
-      return PyonMakeSize(a.width - b.width, a.height - b.height);
-    };
-    PyonSize.prototype.interpolate = function(a,b,progress) {
-      return PyonMakeSize(a.width + (b.width-a.width) * progress, a.height + (b.height-a.height) * progress);
-    };
-
-
-
-    function PyonRect(settings) {
-      PyonValue.call(this,settings);
-    }
-    PyonRect.prototype = Object.create(PyonValue.prototype);
-    PyonRect.prototype.constructor = PyonRect;
-    PyonRect.prototype.zero = function() {
-      return PyonZeroRect();
-    };
-    PyonRect.prototype.add = function(a,b) {
-      return {
-        origin: PyonPoint.prototype.add(a.origin, b.origin),
-        size: PyonSize.prototype.add(a.size, b.size)
-      }
-    };
-    PyonRect.prototype.subtract = function(a,b) { // subtract b from a
-      return {
-        origin: PyonPoint.prototype.subtract(a.origin, b.origin),
-        size: PyonSize.prototype.subtract(a.size, b.size)
-      }
-    };
-    PyonRect.prototype.interpolate = function(a,b,progress) {
-      return {
-        origin: PyonPoint.prototype.interpolate(a.origin, b.origin, progress),
-        size: PyonSize.prototype.interpolate(a.size, b.size, progress)
-      }
-    };
-
-
-
-    function PyonRange(settings) { // TODO: negative values? // This should union the whole range, not add the individual values. NSUnionRange, not NSIntersectionRange, which is a range containing the indices that exist in both ranges.
-      PyonValue.call(this,settings);
-      throw new Error("PyonRange not supported");
-    }
-    PyonRange.prototype = Object.create(PyonValue.prototype);
-    PyonRange.prototype.constructor = PyonRange;
-    PyonRange.prototype.zero = function() {
-      return PyonNullRange();
-    };
-    PyonRange.prototype.add = function(a,b) {  // union?
-      if (a.location === PyonNotFound && b.location === PyonNotFound) return PyonNullRange();
-      if (a.length === 0 && b.length === 0) return PyonNullRange();
-      if (a.location === PyonNotFound || a.length === 0) return b;
-      if (b.location === PyonNotFound || b.length === 0) return a;
-      var finalLocation = Math.min( a.location, b.location );
-      var finalEnd = Math.max( a.location + a.length, b.location + b.length );
-      var result = PyonMakeRange(finalLocation, finalEnd - finalLocation );
-      return result;
-    };
-    PyonRange.prototype.subtract = function(a,b) { // Subtraction is completely different.
-      var result = a;
-      if (a.location === PyonNotFound && b.location === PyonNotFound) result = PyonNullRange();
-      else if (a.length === 0 && b.length === 0) result = PyonNullRange();
-      else if (a.location === PyonNotFound || a.length === 0) result = PyonNullRange();
-      else if (b.location === PyonNotFound || b.length === 0) result = a;
-      else if (b.location <= a.location && b.location + b.length >= a.location + a.length) result = PyonNullRange();
-      else if (b.location <= a.location && b.location + b.length > a.location && b.location + b.length < a.location + a.length) result = PyonMakeRange(b.location + b.length, (a.location + a.length) - (b.location + b.length));
-      else if (b.location > a.location && b.location < a.location + a.length && b.location + b.length >= a.location + a.length) result = PyonMakeRange(a.location, (b.location + b.length) - a.location);
-      return a;
-    };
-    PyonRange.prototype.interpolate = function(a,b,progress) {
-      if (progress >= 1) return b;
-      return a;
-    };
-    PyonRange.prototype.intersection = function(a,b) { // 0,1 and 1,1 do not intersect
-      if (a.location === PyonNotFound || b.location === PyonNotFound || a.length === 0 || b.length === 0) return PyonNullRange();
-      if (a.location + a.length <= b.location || b.location + b.length <= a.location) return PyonNullRange(); // TODO: Consider location should be NSNotFound (INT_MAX) not zero.
-      var finalLocation = Math.max( a.location, b.location );
-      var finalEnd = Math.min( a.location + a.length, b.location + b.length );
-      return Pyon.makeRange(finalLocation, finalEnd - finalLocation);
-    };
-
-    var PyonNotFound = Number.MAX_VALUE;
-    // struct convenience constructors:
-    function PyonMakeRect(x,y,width,height) {
-      return {
-        origin: PyonMakePoint(x,y),
-        size: PyonMakeSize(width,height)
-      };
-    }
-    function PyonZeroRect() {
-      return PyonMakeRect(0,0,0,0);
-    }
-    function PyonEqualRects(a,b) {
-      return (PyonEqualPoints(a.origin,b.origin) && PyonEqualSizes(a.size,b.size));
-    }
-
-    function PyonMakePoint(x,y) {
-      return {
-        x: x,
-        y: y
-      };
-    }
-    function PyonZeroPoint() {
-      return PyonMakePoint(0,0);
-    }
-    function PyonEqualPoints(a,b) {
-      return (a.x === b.x && a.y === b.y);
-    }
-
-    function PyonMakeSize(width, height) {
-      return {
-        width: width,
-        height: height
-      };
-    }
-    function PyonZeroSize() {
-      return PyonMakeSize(0,0);
-    }
-    function PyonEqualSizes(a,b) {
-      return (a.width === b.width && a.height && b.height);
-    }
-
-    function PyonMakeRange(location, length) {
-      return {
-        location: location,
-        length: length
-      }
-    }
-    function PyonZeroRange() {
-      return PyonMakeRange(0,0);
-    }
-    function PyonNullRange() {
-      return PyonMakeRange(PyonNotFound,0);
-    }
-    function PyonIndexInRange(index,range) {
-      return (index > range.location && index < range.location + range.length);
-    }
-    function PyonEqualRanges(a,b) {
-      return (a.location === b.location && a.length === b.length);
-    }
-    function PyonIntersectionRange(a,b) {
-      if (a.location + a.length <= b.location || b.location + b.length <= a.location) return PyonNullRange();
-      var location = Math.max( a.location, b.location );
-      var end = Math.min( a.location + a.length, b.location + b.length );
-      return { location: location, length: end - location };
-    }
-
-
-
+    //var noop = typeof window === "undefined"; // TODO: figure out server side behavior. Not all functions can be noop. For now prevent in pyon-react, but I do expect there to be uses in React for creating transactions.
     return {
       Layer: PyonLayer, // The basic layer class, meant to be subclassed
       Animation: PyonAnimation, // The basic animation class.
       ValueType: PyonValue, // Abstract type base class
       NumberType: PyonNumber, // For animating numbers
-      ScaleType: PyonScale, // For animating transform scale, a single axis.
+      ScaleType: PyonScale, // For animating transform scale
       ArrayType: PyonArray, // For animating arrays of other value types
       SetType: PyonSet, // Discrete object collection changes
-      PointType: PyonPoint, // Like NSPoint
-      SizeType: PyonSize, // Like NSSize
-      RectType: PyonRect, // Like NSRect
-      RangeType: PyonRange, // Discrete. Like NSRange but allows non-integer values. Maybe it shouldn't. TODO: Consider converting to integers
-
-      makeRect: PyonMakeRect,
-      zeroRect: PyonZeroRect, // TODO: should be a getter not a function
-      equalRects: PyonEqualRects,
-      makeSize: PyonMakeSize,
-      zeroSize: PyonZeroSize, // TODO: should be a getter not a function
-      equalSizes: PyonEqualSizes,
-      makePoint: PyonMakePoint,
-      zeroPoint: PyonZeroPoint, // TODO: should be a getter not a function
-      equalPoints: PyonEqualPoints,
-      makeRange: PyonMakeRange,
-      zeroRange: PyonZeroRange, // TODO: should be a getter not a function // Maybe zero range location should be PyonNotFound
-      nullRange: PyonNullRange, // TODO: should be a getter not a function
-      indexInRange: PyonIndexInRange,
-      equalRanges: PyonEqualRanges,
-      intersectionRange: PyonIntersectionRange,
-      notFound: PyonNotFound,
-
+      DictType: PyonDict, // Discrete key changes
       beginTransaction: pyonContext.beginTransaction.bind(pyonContext),
       commitTransaction: pyonContext.commitTransaction.bind(pyonContext),
       flushTransaction: pyonContext.flushTransaction.bind(pyonContext),
       currentTransaction: pyonContext.currentTransaction.bind(pyonContext),
       disableAnimation: pyonContext.disableAnimation.bind(pyonContext),
 
-      addAnimation: pyonContext.addAnimation.bind(pyonContext), // for layerized objects
-      removeAnimation: pyonContext.removeAnimation.bind(pyonContext), // for layerized objects
-      removeAllAnimations: pyonContext.removeAllAnimations.bind(pyonContext), // for layerized objects
-      animationNamed: pyonContext.animationNamed.bind(pyonContext), // for layerized objects
-      animationKeys: pyonContext.animationKeys.bind(pyonContext), // for layerized objects
-      presentationLayer: pyonContext.presentationLayer.bind(pyonContext), // for layerized objects
-      registerAnimatableProperty: pyonContext.registerAnimatableProperty.bind(pyonContext), // for layerized objects // workaround for lack of Proxy
+      addAnimation: pyonContext.addAnimation.bind(pyonContext),
+      removeAnimation: pyonContext.removeAnimation.bind(pyonContext),
+      removeAllAnimations: pyonContext.removeAllAnimations.bind(pyonContext),
+      animationNamed: pyonContext.animationNamed.bind(pyonContext),
+      animationKeys: pyonContext.animationKeys.bind(pyonContext),
+      presentationLayer: pyonContext.presentationLayer.bind(pyonContext),
+      registerAnimatableProperty: pyonContext.registerAnimatableProperty.bind(pyonContext),
 
-      composite: presentationCompositePublic,
-
-      pyonify: pyonify, // To mixin layer functionality in objects that are not PyonLayer subclasses.
-      layerize: pyonContext.layerize.bind(pyonContext), // pojo mode
-      //pyon: pyon, // I'm unsure about naming
-      decorate: pyon, // short version, first argument layer, second argument delegate.
-      //wantsLayer: pyon, // Slightly different from Core Animation, the argument is the item that becomes a layer.
+      layerize: pyonContext.layerize.bind(pyonContext),
+      pyonify: Pyonify, // To mixin layer functionality in objects that are not PyonLayer subclasses.
     }
   })();
-
 
 
   Pyon.noConflict = function() {
